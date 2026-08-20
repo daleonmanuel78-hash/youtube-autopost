@@ -6,18 +6,12 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  generate-seo:
+  trigger:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install dependencies
-        run: npm install node-fetch@2 ws @supabase/supabase-js
-      - name: Generate SEO metadata for the next 10 videos
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: node scripts/generate-seo.js 10
+      - name: Ping the admin panel's generate-seo endpoint
+        run: |
+          curl -f -X POST "https://youtube-autopost-ii0e.onrender.com/api/admin/generate-seo" \
+            -H "Content-Type: application/json" \
+            -H "x-admin-secret: ${{ secrets.ADMIN_SECRET }}" \
+            -d '{"count":10}'

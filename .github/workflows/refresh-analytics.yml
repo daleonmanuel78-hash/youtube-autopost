@@ -6,19 +6,11 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  refresh-analytics:
+  trigger:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install dependencies
-        run: npm install googleapis ws @supabase/supabase-js
-      - name: Refresh analytics snapshots
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-        run: node scripts/refresh-analytics.js
+      - name: Ping the admin panel's refresh-analytics endpoint
+        run: |
+          curl -f -X POST "https://youtube-autopost-ii0e.onrender.com/api/admin/refresh-analytics" \
+            -H "Content-Type: application/json" \
+            -H "x-admin-secret: ${{ secrets.ADMIN_SECRET }}"

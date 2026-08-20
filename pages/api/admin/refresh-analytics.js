@@ -1,0 +1,95 @@
+import { supabaseAdmin } from '../../../lib/supabase';
+import { refreshAccessToken } from '../../../lib/youtubeHelpers';
+import { checkAdminAuth } from '../../../lib/adminAuth';
+import { google } from 'googleapis';
+
+function todayDateString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
+  if (!checkAdminAuth(req)) return res.status(401).json({ error: 'Unauthorized' });
+
+  const log = [];
+  const add = (line) => log.push(line);
+
+  try {
+    const { data: posted } = await supabaseAdmin
+      .from('post_queue')
+      .select('youtube_video_id, channel_id')
+      .eq('status', 'posted')
+      .not('youtube_video_id', 'is', null);
+
+    if (!posted || posted.length === 0) {
+      add('No posted videos yet.');
+      return res.status(200).json({ log });
+    }
+
+    const byChannel = {};
+    for (const row of posted) {
+      if (!byChannel[row.channel_id]) byChannel[row.channel_id] = [];
+      byChannel[row.channel_id].push(row.youtube_video_id);
+    }
+
+    const { data: channels } = await supabaseAdmin.from('channels').select('*');
+    const channelById = Object.fromEntries((channels || []).map((c) => [c.id, c]));
+    const today = todayDateString();
+    let updated = 0;
+
+    for (const [channelId, videoIds] of Object.entries(byChannel)) {
+      const channel = channelById[channelId];
+      if (!channel) continue;
+      add(`--- ${channel.name}: ${videoIds.length} video(s) ---`);
+
+      const oauth2Client = await refreshAccessToken(channel);
+      const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+      const youtubeAnalytics = google.youtubeAnalytics({ version: 'v2', auth: oauth2Client });
+
+      for (const youtubeVideoId of videoIds) {
+        try {
+          const statsResp = await youtube.videos.list({ part: ['statistics'], id: [youtubeVideoId] });
+          const stats = statsResp.data.items?.[0]?.statistics;
+
+          let extra = { watch_time_minutes: null, impressions: null, ctr: null };
+          try {
+            const anResp = await youtubeAnalytics.reports.query({
+              ids: `channel==${channel.youtube_channel_id}`,
+              startDate: '2020-01-01',
+              endDate: today,
+              metrics: 'estimatedMinutesWatched,impressions,impressionsClickThroughRate',
+              filters: `video==${youtubeVideoId}`,
+            });
+            const row = anResp.data.rows?.[0];
+            if (row) extra = { watch_time_minutes: row[0] ?? null, impressions: row[1] ?? null, ctr: row[2] ?? null };
+          } catch (e) {
+            /* analytics can be unavailable for new videos — non-fatal */
+          }
+
+          await supabaseAdmin.from('video_analytics_snapshots').upsert(
+            {
+              youtube_video_id: youtubeVideoId,
+              views: stats?.viewCount ? Number(stats.viewCount) : null,
+              likes: stats?.likeCount ? Number(stats.likeCount) : null,
+              comments: stats?.commentCount ? Number(stats.commentCount) : null,
+              watch_time_minutes: extra.watch_time_minutes,
+              impressions: extra.impressions,
+              ctr: extra.ctr,
+              snapshot_date: today,
+            },
+            { onConflict: 'youtube_video_id,snapshot_date' }
+          );
+          updated++;
+          add(`✓ ${youtubeVideoId}: ${stats?.viewCount ?? 0} views`);
+        } catch (err) {
+          add(`✗ ${youtubeVideoId}: ${err.message}`);
+        }
+      }
+    }
+    add(`Done. ${updated} snapshot(s) updated.`);
+    res.status(200).json({ log });
+  } catch (err) {
+    add(`Fatal error: ${err.message}`);
+    res.status(500).json({ log, error: err.message });
+  }
+}

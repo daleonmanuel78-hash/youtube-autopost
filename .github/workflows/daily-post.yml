@@ -3,22 +3,15 @@ name: Daily YouTube Post
 on:
   schedule:
     - cron: '0 9 * * *' # 9:00 AM UTC daily — adjust the hour for your preferred time
-  workflow_dispatch: {} # lets you also trigger it manually from GitHub's Actions tab
+  workflow_dispatch: {}
 
 jobs:
-  post:
+  trigger:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install dependencies
-        run: npm install googleapis node-fetch@2 ws @supabase/supabase-js
-      - name: Run daily post worker
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-        run: node scripts/daily-post.js --private
+      - name: Ping the admin panel's post-video endpoint
+        run: |
+          curl -f -X POST "https://youtube-autopost-ii0e.onrender.com/api/admin/daily-post" \
+            -H "Content-Type: application/json" \
+            -H "x-admin-secret: ${{ secrets.ADMIN_SECRET }}" \
+            -d '{"privacyStatus":"public"}'
