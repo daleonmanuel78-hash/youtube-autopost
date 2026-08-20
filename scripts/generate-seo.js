@@ -24,7 +24,7 @@ const fetch = require('node-fetch');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 const BATCH_LIMIT = parseInt(process.argv[2] || '20', 10);
 
 if (!SUPABASE_URL || !SUPABASE_SECRET_KEY || !GEMINI_API_KEY) {
@@ -57,7 +57,7 @@ Exact shape:
 async function callGemini(video) {
   const body = {
     contents: [{ parts: [{ text: buildPrompt(video) }] }],
-    generationConfig: { temperature: 0.7, responseMimeType: 'application/json' },
+    generationConfig: { temperature: 0.7, responseMimeType: 'application/json', maxOutputTokens: 1024 },
   };
 
   const resp = await fetch(GEMINI_URL, {
@@ -79,7 +79,18 @@ async function callGemini(video) {
   try {
     parsed = JSON.parse(text);
   } catch (e) {
-    throw new Error(`Gemini response wasn't valid JSON: ${text.slice(0, 200)}`);
+    // response got cut off or has stray text around the JSON — try to salvage
+    // by extracting just the { ... } portion before giving up
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch (e2) {
+        throw new Error(`Gemini response wasn't valid JSON even after cleanup: ${text.slice(0, 200)}`);
+      }
+    } else {
+      throw new Error(`Gemini response wasn't valid JSON: ${text.slice(0, 200)}`);
+    }
   }
   return parsed;
 }

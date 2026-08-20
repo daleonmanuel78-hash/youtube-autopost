@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { supabaseAdmin } from '../lib/supabase';
 
 export async function getServerSideProps() {
@@ -20,25 +21,28 @@ export default function Home({ channels, error }) {
 
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {channels.map((c) => (
-          <li
-            key={c.id}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-              padding: 12,
-              border: '1px solid #ddd',
-              borderRadius: 8,
-              marginBottom: 8,
-            }}
-          >
-            {c.thumbnail_url && (
-              <img src={c.thumbnail_url} alt="" width={40} height={40} style={{ borderRadius: '50%' }} />
-            )}
-            <div>
-              <div style={{ fontWeight: 600 }}>{c.name}</div>
-              <div style={{ fontSize: 12, color: '#666' }}>{c.youtube_channel_id}</div>
-            </div>
+          <li key={c.id} style={{ marginBottom: 8 }}>
+            <Link
+              href={`/channels/${c.id}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: 12,
+                border: '1px solid #ddd',
+                borderRadius: 8,
+                textDecoration: 'none',
+                color: 'inherit',
+              }}
+            >
+              {c.thumbnail_url && (
+                <img src={c.thumbnail_url} alt="" width={40} height={40} style={{ borderRadius: '50%' }} />
+              )}
+              <div>
+                <div style={{ fontWeight: 600 }}>{c.name}</div>
+                <div style={{ fontSize: 12, color: '#666' }}>{c.youtube_channel_id}</div>
+              </div>
+            </Link>
           </li>
         ))}
       </ul>
