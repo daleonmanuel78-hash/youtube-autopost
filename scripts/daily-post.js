@@ -154,6 +154,7 @@ async function main() {
 
   for (const channel of channels) {
     console.log(`--- ${channel.name} ---`);
+    let claim = null;
     try {
       const categoryId = await pickCategoryForChannel(channel);
       if (!categoryId) {
@@ -169,7 +170,7 @@ async function main() {
 
       console.log(`Selected video: ${video.original_title} (${video.id})`);
 
-      const claim = await claimVideo(video, channel, categoryId);
+      claim = await claimVideo(video, channel, categoryId);
 
       const { data: seoRows } = await supabase
         .from('video_seo')
@@ -198,6 +199,15 @@ async function main() {
       console.log(`✓ Uploaded: https://youtube.com/watch?v=${youtubeVideoId}\n`);
     } catch (err) {
       console.error(`✗ Error for ${channel.name}: ${err.message}\n`);
+      // If we'd already claimed a video before the failure, mark that claim as
+      // failed rather than leaving it stuck at "uploading" forever — a stuck
+      // row silently blocks that same video from being retried until tomorrow.
+      if (claim) {
+        await supabase
+          .from('post_queue')
+          .update({ status: 'failed', error_message: err.message })
+          .eq('id', claim.id);
+      }
     }
   }
 
