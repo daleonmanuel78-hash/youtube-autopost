@@ -29,7 +29,26 @@ export default async function handler(req, res) {
     const today = new Date().toISOString().slice(0, 10);
 
     const statsResp = await youtube.videos.list({ part: ['statistics'], id: [queue.youtube_video_id] });
-    const stats = statsResp.data.items?.[0]?.statistics;
+
+    // If YouTube has no record of this video at all, it was deleted directly
+    // on YouTube (outside our system) — we'd never otherwise find out, since
+    // nothing notifies us when that happens. Detect it here and self-heal by
+    // moving it to Trash so the dashboard stops showing it as live.
+    if (!statsResp.data.items || statsResp.data.items.length === 0) {
+      await supabaseAdmin
+        .from('videos')
+        .update({ trashed_at: new Date().toISOString(), trashed_from_status: 'posted', status: 'trashed' })
+        .eq('id', videoId);
+      await supabaseAdmin
+        .from('post_queue')
+        .update({ status: 'deleted', deleted_at: new Date().toISOString() })
+        .eq('video_id', videoId)
+        .eq('youtube_video_id', queue.youtube_video_id);
+
+      return res.status(200).json({ ok: true, deletedOnYoutube: true, message: 'This video no longer exists on YouTube — it was moved to Trash.' });
+    }
+
+    const stats = statsResp.data.items[0].statistics;
 
     let extra = { watch_time_minutes: null, impressions: null, ctr: null };
     try {

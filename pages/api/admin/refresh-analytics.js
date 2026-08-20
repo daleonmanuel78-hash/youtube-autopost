@@ -17,7 +17,7 @@ export default async function handler(req, res) {
   try {
     const { data: posted } = await supabaseAdmin
       .from('post_queue')
-      .select('youtube_video_id, channel_id')
+      .select('video_id, youtube_video_id, channel_id')
       .eq('status', 'posted')
       .not('youtube_video_id', 'is', null);
 
@@ -29,27 +29,47 @@ export default async function handler(req, res) {
     const byChannel = {};
     for (const row of posted) {
       if (!byChannel[row.channel_id]) byChannel[row.channel_id] = [];
-      byChannel[row.channel_id].push(row.youtube_video_id);
+      byChannel[row.channel_id].push({ videoId: row.video_id, youtubeVideoId: row.youtube_video_id });
     }
 
     const { data: channels } = await supabaseAdmin.from('channels').select('*');
     const channelById = Object.fromEntries((channels || []).map((c) => [c.id, c]));
     const today = todayDateString();
     let updated = 0;
+    let autoTrashed = 0;
 
-    for (const [channelId, videoIds] of Object.entries(byChannel)) {
+    for (const [channelId, videos] of Object.entries(byChannel)) {
       const channel = channelById[channelId];
       if (!channel) continue;
-      add(`--- ${channel.name}: ${videoIds.length} video(s) ---`);
+      add(`--- ${channel.name}: ${videos.length} video(s) ---`);
 
       const oauth2Client = await refreshAccessToken(channel);
       const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
       const youtubeAnalytics = google.youtubeAnalytics({ version: 'v2', auth: oauth2Client });
 
-      for (const youtubeVideoId of videoIds) {
+      for (const { videoId, youtubeVideoId } of videos) {
         try {
           const statsResp = await youtube.videos.list({ part: ['statistics'], id: [youtubeVideoId] });
-          const stats = statsResp.data.items?.[0]?.statistics;
+
+          // No items back means the video no longer exists on YouTube — most
+          // likely deleted directly there, outside our system. We'd never
+          // otherwise learn about that, so self-heal by moving it to Trash.
+          if (!statsResp.data.items || statsResp.data.items.length === 0) {
+            await supabaseAdmin
+              .from('videos')
+              .update({ trashed_at: new Date().toISOString(), trashed_from_status: 'posted', status: 'trashed' })
+              .eq('id', videoId);
+            await supabaseAdmin
+              .from('post_queue')
+              .update({ status: 'deleted', deleted_at: new Date().toISOString() })
+              .eq('video_id', videoId)
+              .eq('youtube_video_id', youtubeVideoId);
+            autoTrashed++;
+            add(`⚠ ${youtubeVideoId}: no longer exists on YouTube — moved to Trash`);
+            continue;
+          }
+
+          const stats = statsResp.data.items[0].statistics;
 
           let extra = { watch_time_minutes: null, impressions: null, ctr: null };
           try {
@@ -86,7 +106,7 @@ export default async function handler(req, res) {
         }
       }
     }
-    add(`Done. ${updated} snapshot(s) updated.`);
+    add(`Done. ${updated} snapshot(s) updated, ${autoTrashed} auto-trashed (deleted on YouTube).`);
     res.status(200).json({ log });
   } catch (err) {
     add(`Fatal error: ${err.message}`);

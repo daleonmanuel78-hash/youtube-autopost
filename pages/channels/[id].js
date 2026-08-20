@@ -52,7 +52,8 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('long');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [showTrash, setShowTrash] = useState(false);
+  const [refreshingAnalytics, setRefreshingAnalytics] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState(null);
   const [selectedVideoId, setSelectedVideoId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [needsCategory, setNeedsCategory] = useState(false);
@@ -62,7 +63,7 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
 
   function load() {
     setLoading(true);
-    fetch(`/api/channels/${channel.id}/videos${showTrash ? '?includeTrashed=true' : ''}`)
+    fetch(`/api/channels/${channel.id}/videos`)
       .then((r) => r.json())
       .then((data) => {
         setVideos(data.videos || []);
@@ -72,7 +73,7 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
       });
   }
 
-  useEffect(() => { load(); }, [channel.id, showTrash]);
+  useEffect(() => { load(); }, [channel.id]);
 
   const postedVideos = videos.filter((v) => v.is_posted);
   const draftVideos = videos.filter((v) => v.resolved_status === 'draft');
@@ -80,7 +81,7 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
 
   const shorts = postedVideos.filter((v) => v.is_short === true);
   const longform = postedVideos.filter((v) => v.is_short !== true);
-  const activeList = showTrash ? videos : tab === 'short' ? shorts : tab === 'long' ? longform : tab === 'draft' ? draftVideos : failedVideos;
+  const activeList = tab === 'short' ? shorts : tab === 'long' ? longform : tab === 'draft' ? draftVideos : failedVideos;
 
   const statusCounts = {
     public: postedVideos.filter((v) => v.resolved_status === 'public').length,
@@ -102,19 +103,34 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
 
   async function handleDeleteSelected() {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Delete ${selectedIds.size} video(s)? Posted videos will also be removed from YouTube. This moves them to Trash — they can be restored later, but as brand-new uploads.`)) return;
+    if (!confirm(`Delete ${selectedIds.size} video(s)? This removes them from YouTube and from this dashboard.`)) return;
     setBusy(true);
     await fetch('/api/videos/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ videoIds: [...selectedIds] }) });
     setBusy(false);
     load();
   }
 
-  async function handleRestoreSelected() {
-    if (selectedIds.size === 0) return;
-    setBusy(true);
-    await fetch('/api/videos/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ videoIds: [...selectedIds] }) });
-    setBusy(false);
-    load();
+  async function handleRefreshAnalytics() {
+    setRefreshingAnalytics(true);
+    setRefreshMessage(null);
+    try {
+      const resp = await fetch(`/api/channels/${channel.id}/refresh-analytics`, { method: 'POST' });
+      const result = await resp.json();
+      if (resp.ok) {
+        setRefreshMessage(
+          result.autoTrashed > 0
+            ? `Updated ${result.updated} video(s). ${result.autoTrashed} were no longer on YouTube and were removed here too.`
+            : `Updated ${result.updated} video(s).`
+        );
+      } else {
+        setRefreshMessage(result.error || 'Refresh failed.');
+      }
+      load();
+    } catch (err) {
+      setRefreshMessage(err.message);
+    } finally {
+      setRefreshingAnalytics(false);
+    }
   }
 
   async function handleSetCategory(categoryId) {
@@ -190,33 +206,33 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
           <StatCard label="Total likes" value={totalLikes.toLocaleString()} c={c} />
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: refreshMessage ? 8 : 20, flexWrap: 'wrap', alignItems: 'center' }}>
           {['public', 'private', 'scheduled', 'draft', 'failed'].map((key) => (
             <StatusChip key={key} active={statusFilter === key} onClick={() => setStatusFilter(statusFilter === key ? 'all' : key)} count={statusCounts[key]} meta={STATUS_META[key]} />
           ))}
-          <button onClick={() => { setShowTrash(!showTrash); setStatusFilter('all'); }}
-            style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 14px', borderRadius: 20, border: `1px solid ${c.border}`, background: showTrash ? c.text : '#fff', color: showTrash ? '#fff' : c.textDim, cursor: 'pointer' }}>
-            {showTrash ? '← Back to library' : '🗑 Trash'}
+          <button onClick={handleRefreshAnalytics} disabled={refreshingAnalytics}
+            style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 14px', borderRadius: 20, border: `1px solid ${c.border}`, background: '#fff', color: c.textDim, cursor: refreshingAnalytics ? 'default' : 'pointer' }}>
+            {refreshingAnalytics ? 'Refreshing…' : '↻ Refresh Analytics'}
           </button>
         </div>
 
-        {!showTrash && (
-          <div style={{ display: 'flex', gap: 4, marginBottom: 4, borderBottom: `1px solid ${c.border}` }}>
-            <TabButton active={tab === 'long'} onClick={() => setTab('long')} c={c}>Long-form ({longform.length})</TabButton>
-            <TabButton active={tab === 'short'} onClick={() => setTab('short')} c={c}>Shorts ({shorts.length})</TabButton>
-            <TabButton active={tab === 'draft'} onClick={() => setTab('draft')} c={c}>Drafts ({draftVideos.length})</TabButton>
-            <TabButton active={tab === 'failed'} onClick={() => setTab('failed')} c={c}>Failed ({failedVideos.length})</TabButton>
+        {refreshMessage && (
+          <div style={{ fontSize: 12, color: c.textDim, background: c.accentDim, borderRadius: 8, padding: '6px 12px', marginBottom: 20 }}>
+            {refreshMessage}
           </div>
         )}
+
+        <div style={{ display: 'flex', gap: 4, marginBottom: 4, borderBottom: `1px solid ${c.border}` }}>
+          <TabButton active={tab === 'long'} onClick={() => setTab('long')} c={c}>Long-form ({longform.length})</TabButton>
+          <TabButton active={tab === 'short'} onClick={() => setTab('short')} c={c}>Shorts ({shorts.length})</TabButton>
+          <TabButton active={tab === 'draft'} onClick={() => setTab('draft')} c={c}>Drafts ({draftVideos.length})</TabButton>
+          <TabButton active={tab === 'failed'} onClick={() => setTab('failed')} c={c}>Failed ({failedVideos.length})</TabButton>
+        </div>
 
         {selectedIds.size > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: c.text, color: '#fff', borderRadius: 8, padding: '8px 14px', margin: '12px 0', fontSize: 13 }}>
             <span>{selectedIds.size} selected</span>
-            {showTrash ? (
-              <button disabled={busy} onClick={handleRestoreSelected} style={{ marginLeft: 'auto', background: '#fff', color: c.text, border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>Restore</button>
-            ) : (
-              <button disabled={busy} onClick={handleDeleteSelected} style={{ marginLeft: 'auto', background: c.accent, color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>Delete</button>
-            )}
+            <button disabled={busy} onClick={handleDeleteSelected} style={{ marginLeft: 'auto', background: c.accent, color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>Delete</button>
           </div>
         )}
 
@@ -253,7 +269,13 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
         )}
       </div>
 
-      {selectedVideoId && <VideoModal videoId={selectedVideoId} onClose={() => setSelectedVideoId(null)} />}
+      {selectedVideoId && (
+        <VideoModal
+          videoId={selectedVideoId}
+          onClose={() => setSelectedVideoId(null)}
+          onVideoTrashed={() => load()}
+        />
+      )}
     </AppShell>
   );
 }

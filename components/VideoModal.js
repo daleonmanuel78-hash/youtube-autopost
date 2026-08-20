@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { theme } from '../styles/theme';
 
-export default function VideoModal({ videoId, onClose }) {
+export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
   const c = theme.colors;
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -35,6 +35,7 @@ export default function VideoModal({ videoId, onClose }) {
   }
 
   const [statsRefreshing, setStatsRefreshing] = useState(false);
+  const [deletedNotice, setDeletedNotice] = useState(null);
 
   function loadVideoData() {
     return fetch(`/api/videos/${videoId}`)
@@ -45,8 +46,14 @@ export default function VideoModal({ videoId, onClose }) {
   async function handleRefreshStats() {
     setStatsRefreshing(true);
     try {
-      await fetch(`/api/videos/${videoId}/refresh-stats`, { method: 'POST' });
-      await loadVideoData();
+      const resp = await fetch(`/api/videos/${videoId}/refresh-stats`, { method: 'POST' });
+      const result = await resp.json();
+      if (result.deletedOnYoutube) {
+        setDeletedNotice(result.message);
+        if (onVideoTrashed) onVideoTrashed(videoId);
+      } else {
+        await loadVideoData();
+      }
     } finally {
       setStatsRefreshing(false);
     }
@@ -111,6 +118,11 @@ export default function VideoModal({ videoId, onClose }) {
 
         {!loading && data && (
           <>
+            {deletedNotice && (
+              <div style={{ fontSize: 12.5, color: c.statusFailed, background: c.statusFailedBg, borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontWeight: 500 }}>
+                🗑 {deletedNotice}
+              </div>
+            )}
             {data.youtube_video_id ? (
               <div style={{ width: '100%', aspectRatio: '16/9', borderRadius: 8, overflow: 'hidden', marginBottom: 16, background: '#000' }}>
                 <iframe
