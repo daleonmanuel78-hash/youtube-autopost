@@ -36,19 +36,27 @@ export default async function handler(req, res) {
     }
 
     const latest = snapshots[snapshots.length - 1] || null;
+    // Watch time is cumulative in nature, but our snapshots table stores one
+    // row per day — use the most recent snapshot's value (YouTube Analytics
+    // reports already return lifetime totals per query, not daily deltas).
+    const totals = {
+      views: latest?.views ?? null,
+      likes: latest?.likes ?? null,
+      comments: latest?.comments ?? null,
+      watch_time_minutes: latest?.watch_time_minutes ?? null,
+    };
 
     res.status(200).json({
       video,
       seo,
       queue,
-      // description/title shown to viewers: Gemini's version if it exists, else the original
       display_title: seo?.generated_title || video.original_title,
       display_description: seo?.generated_description || video.original_caption || video.original_idea || '',
+      youtube_video_id: queue?.youtube_video_id || null,
       thumbnail_url: queue?.youtube_video_id
         ? `https://i.ytimg.com/vi/${queue.youtube_video_id}/hqdefault.jpg`
         : null,
-      latest_stats: latest,
-      snapshot_history: snapshots,
+      totals,
     });
   } catch (err) {
     console.error(err);

@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '../../../../lib/supabase';
 
 export default async function handler(req, res) {
-  const { id: channelId } = req.query;
+  const { id: channelId, includeTrashed } = req.query;
 
   try {
     const { data: links, error: linkErr } = await supabaseAdmin
@@ -12,50 +12,72 @@ export default async function handler(req, res) {
 
     const categoryIds = (links || []).map((l) => l.category_id);
     if (categoryIds.length === 0) {
-      return res.status(200).json({ videos: [] });
+      return res.status(200).json({ videos: [], needsCategory: true });
     }
 
-    const { data: videos, error: vidErr } = await supabaseAdmin
+    let videosQuery = supabaseAdmin
       .from('videos')
-      .select('id, original_title, is_short, status, category_id, created_at')
+      .select('id, original_title, is_short, status, category_id, created_at, trashed_at')
       .in('category_id', categoryIds)
       .order('created_at', { ascending: false });
+
+    if (includeTrashed !== 'true') {
+      videosQuery = videosQuery.is('trashed_at', null);
+    } else {
+      videosQuery = videosQuery.not('trashed_at', 'is', null);
+    }
+
+    const { data: videos, error: vidErr } = await videosQuery;
     if (vidErr) throw vidErr;
 
-    // Only videos THIS channel has actually claimed/posted show up in post_queue —
-    // filtering by channel_id alone keeps this a small, cheap query, unlike filtering
-    // by hundreds of video IDs (which blew past Supabase's URL/header size limit).
+    // ALL post_queue rows for this channel (not just latest), so we can find
+    // the most recent one per video and correctly ignore stale/deleted history
     const { data: queueRows, error: qErr } = await supabaseAdmin
       .from('post_queue')
-      .select('video_id, status, youtube_video_id, publish_mode, scheduled_date')
-      .eq('channel_id', channelId);
+      .select('video_id, status, youtube_video_id, publish_mode, scheduled_date, created_at')
+      .eq('channel_id', channelId)
+      .order('created_at', { ascending: false });
     if (qErr) throw qErr;
-    const queueByVideo = Object.fromEntries(queueRows.map((q) => [q.video_id, q]));
+
+    const latestQueueByVideo = {};
+    for (const q of queueRows) {
+      if (!latestQueueByVideo[q.video_id]) latestQueueByVideo[q.video_id] = q;
+    }
 
     const youtubeIds = queueRows.filter((q) => q.youtube_video_id).map((q) => q.youtube_video_id);
     let snapshotByYoutubeId = {};
     if (youtubeIds.length > 0) {
-      const { data: snapshots, error: sErr } = await supabaseAdmin
+      const { data: snapshots } = await supabaseAdmin
         .from('video_analytics_snapshots')
         .select('*')
         .in('youtube_video_id', youtubeIds)
         .order('snapshot_date', { ascending: false });
-      if (sErr) throw sErr;
-      for (const s of snapshots) {
+      for (const s of snapshots || []) {
         if (!snapshotByYoutubeId[s.youtube_video_id]) snapshotByYoutubeId[s.youtube_video_id] = s;
       }
     }
 
     const enriched = videos.map((v) => {
-      const queue = queueByVideo[v.id] || null;
+      const queue = latestQueueByVideo[v.id] || null;
       const snapshot = queue?.youtube_video_id ? snapshotByYoutubeId[queue.youtube_video_id] : null;
+
+      // Status resolution: trashed videos already filtered above; otherwise
+      // Draft = never claimed by this channel, else reflect the latest attempt.
+      let resolvedStatus = 'draft';
+      if (queue) {
+        if (queue.status === 'posted') {
+          resolvedStatus = queue.publish_mode === 'private' ? 'private' : queue.publish_mode === 'scheduled' ? 'scheduled' : 'public';
+        } else if (queue.status === 'failed') resolvedStatus = 'failed';
+        else if (queue.status === 'uploading') resolvedStatus = 'uploading';
+      }
+
       return {
         id: v.id,
         title: v.original_title,
         is_short: v.is_short,
         created_at: v.created_at,
-        post_status: queue ? queue.status : 'draft',
-        publish_mode: queue?.publish_mode || null,
+        resolved_status: resolvedStatus, // draft | uploading | public | private | scheduled | failed
+        is_posted: resolvedStatus === 'public' || resolvedStatus === 'private' || resolvedStatus === 'scheduled',
         youtube_video_id: queue?.youtube_video_id || null,
         views: snapshot?.views ?? null,
         likes: snapshot?.likes ?? null,
@@ -63,7 +85,7 @@ export default async function handler(req, res) {
       };
     });
 
-    res.status(200).json({ videos: enriched });
+    res.status(200).json({ videos: enriched, needsCategory: false });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

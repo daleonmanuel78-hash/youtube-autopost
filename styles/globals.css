@@ -1,0 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #F7F6F3; color: #1A1B1F; font-family: 'Inter', sans-serif; }
+button { font-family: inherit; }
+a { color: inherit; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #D8D6CE; border-radius: 4px; }
+
+:focus-visible { outline: 2px solid #E8492E; outline-offset: 2px; }
