@@ -1,8 +1,12 @@
 name: Daily YouTube Post
 
+# PAUSED — the automatic schedule below is commented out on purpose.
+# Nothing will post automatically until this is turned back on.
+# You can still trigger a manual run any time from the Actions tab (it now
+# defaults to private, as an extra safety net).
 on:
-  schedule:
-    - cron: '0 9 * * *' # 9:00 AM UTC daily — adjust the hour for your preferred time
+  # schedule:
+  #   - cron: '0 9 * * *' # 9:00 AM UTC daily — uncomment to re-enable automatic posting
   workflow_dispatch: {}
 
 jobs:
@@ -14,4 +18,4 @@ jobs:
           curl -f -X POST "https://youtube-autopost-ii0e.onrender.com/api/admin/daily-post" \
             -H "Content-Type: application/json" \
             -H "x-admin-secret: ${{ secrets.ADMIN_SECRET }}" \
-            -d '{"privacyStatus":"public"}'
+            -d '{"privacyStatus":"private"}'

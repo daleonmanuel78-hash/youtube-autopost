@@ -64,13 +64,19 @@ export default async function handler(req, res) {
     res.status(405).json({ error: 'Method not allowed' });
   } catch (err) {
     console.error(err);
-    // Missing the force-ssl scope shows up as a 403 here — surface a clear,
-    // actionable message instead of a raw Google API error.
-    if (err.message?.includes('insufficient') || err.code === 403) {
+    const rawMessage = err.errors?.[0]?.message || err.message || 'Unknown error';
+    const reason = err.errors?.[0]?.reason || '';
+
+    // insufficientPermissions specifically means a missing OAuth scope — that's
+    // the one case where reconnecting actually fixes it. Anything else, show
+    // the real Google error so we're not guessing at the cause.
+    if (reason === 'insufficientPermissions' || rawMessage.toLowerCase().includes('insufficient')) {
       return res.status(403).json({
         error: 'This channel needs to be reconnected to allow replying to comments (a permission was added after it was first connected).',
+        detail: rawMessage,
       });
     }
-    res.status(500).json({ error: err.message });
+
+    return res.status(500).json({ error: rawMessage });
   }
 }

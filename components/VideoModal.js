@@ -12,22 +12,51 @@ export default function VideoModal({ videoId, onClose }) {
   const [replyError, setReplyError] = useState(null);
   const [sending, setSending] = useState(false);
 
-  useEffect(() => {
-    setLoading(true);
-    fetch(`/api/videos/${videoId}`)
-      .then((r) => r.json())
-      .then((d) => {
-        setData(d);
-        setLoading(false);
-      });
+  const [commentsError, setCommentsError] = useState(null);
 
+  function loadComments() {
     setCommentsLoading(true);
+    setCommentsError(null);
     fetch(`/api/videos/${videoId}/comments`)
-      .then((r) => r.json())
-      .then((d) => {
-        setComments(d.comments || []);
+      .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+      .then(({ ok, d }) => {
+        if (!ok) {
+          setCommentsError(d.detail ? `${d.error} (${d.detail})` : d.error || 'Failed to load comments.');
+          setComments([]);
+        } else {
+          setComments(d.comments || []);
+        }
+        setCommentsLoading(false);
+      })
+      .catch((err) => {
+        setCommentsError(err.message);
         setCommentsLoading(false);
       });
+  }
+
+  const [statsRefreshing, setStatsRefreshing] = useState(false);
+
+  function loadVideoData() {
+    return fetch(`/api/videos/${videoId}`)
+      .then((r) => r.json())
+      .then((d) => setData(d));
+  }
+
+  async function handleRefreshStats() {
+    setStatsRefreshing(true);
+    try {
+      await fetch(`/api/videos/${videoId}/refresh-stats`, { method: 'POST' });
+      await loadVideoData();
+    } finally {
+      setStatsRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    setLoading(true);
+    loadVideoData().then(() => setLoading(false));
+
+    loadComments();
   }, [videoId]);
 
   async function sendReply(parentId) {
@@ -46,9 +75,7 @@ export default function VideoModal({ videoId, onClose }) {
       } else {
         setReplyText('');
         setReplyTo(null);
-        // refresh comments to show the new reply
-        const refreshed = await fetch(`/api/videos/${videoId}/comments`).then((r) => r.json());
-        setComments(refreshed.comments || []);
+        loadComments();
       }
     } catch (err) {
       setReplyError(err.message);
@@ -115,6 +142,12 @@ export default function VideoModal({ videoId, onClose }) {
               {data.queue?.publish_mode ? ` (${data.queue.publish_mode})` : ''}
             </div>
 
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+              <span style={{ fontSize: 12, color: c.textDim, fontWeight: 600 }}>Analytics</span>
+              <button onClick={handleRefreshStats} disabled={statsRefreshing} style={{ fontSize: 11, color: c.textDim, background: 'none', border: `1px solid ${c.border}`, borderRadius: 6, padding: '3px 10px', cursor: statsRefreshing ? 'default' : 'pointer' }}>
+                {statsRefreshing ? 'Refreshing…' : '↻ Refresh'}
+              </button>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
               <MiniStat label="Views" value={data.totals.views} c={c} />
               <MiniStat label="Likes" value={data.totals.likes} c={c} />
@@ -126,11 +159,22 @@ export default function VideoModal({ videoId, onClose }) {
               {data.display_description || <span style={{ color: c.textDim }}>No description yet.</span>}
             </div>
 
-            <h3 style={{ fontSize: 14, marginBottom: 10, fontFamily: theme.font.display }}>Comments</h3>
+            <h3 style={{ fontSize: 14, marginBottom: 10, fontFamily: theme.font.display, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              Comments
+              <button onClick={loadComments} style={{ fontSize: 11, color: c.textDim, background: 'none', border: `1px solid ${c.border}`, borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontWeight: 400 }}>
+                ↻ Refresh
+              </button>
+            </h3>
+
+            {commentsError && (
+              <div style={{ fontSize: 12, color: c.statusFailed, background: c.statusFailedBg, borderRadius: 6, padding: '8px 10px', marginBottom: 10 }}>
+                {commentsError}
+              </div>
+            )}
 
             {commentsLoading ? (
               <p style={{ fontSize: 12, color: c.textDim }}>Loading comments…</p>
-            ) : comments.length === 0 ? (
+            ) : comments.length === 0 && !commentsError ? (
               <p style={{ fontSize: 12, color: c.textDim }}>No comments yet.</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { supabaseAdmin } from '../../lib/supabase';
 import { getChannelsWithCounts } from '../../lib/channelsWithCounts';
+import { refreshAccessToken } from '../../lib/youtubeHelpers';
+import { google } from 'googleapis';
 import AppShell from '../../components/AppShell';
 import VideoModal from '../../components/VideoModal';
 import { theme } from '../../styles/theme';
@@ -13,7 +15,25 @@ export async function getServerSideProps({ params }) {
   const { data: categories } = await supabaseAdmin.from('categories').select('id, name');
   const channels = await getChannelsWithCounts();
 
-  return { props: { channel, categories: categories || [], channels } };
+  // Pull subscriber count live from YouTube — not something we store ourselves,
+  // it changes constantly and isn't worth persisting/going stale.
+  let subscriberCount = null;
+  let subscribersHidden = false;
+  try {
+    const oauth2Client = await refreshAccessToken(channel);
+    const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+    const resp = await youtube.channels.list({ part: ['statistics'], id: [channel.youtube_channel_id] });
+    const stats = resp.data.items?.[0]?.statistics;
+    if (stats?.hiddenSubscriberCount) {
+      subscribersHidden = true;
+    } else if (stats?.subscriberCount != null) {
+      subscriberCount = Number(stats.subscriberCount);
+    }
+  } catch (e) {
+    // non-fatal — page still works without this, just shows a dash
+  }
+
+  return { props: { channel, categories: categories || [], channels, subscriberCount, subscribersHidden } };
 }
 
 const STATUS_META = {
@@ -25,7 +45,7 @@ const STATUS_META = {
   uploading: { label: 'Uploading', color: theme.colors.statusScheduled, bg: theme.colors.statusScheduledBg },
 };
 
-export default function ChannelDetail({ channel, categories, channels }) {
+export default function ChannelDetail({ channel, categories, channels, subscriberCount, subscribersHidden }) {
   const router = useRouter();
   const c = theme.colors;
   const [videos, setVideos] = useState([]);
@@ -164,6 +184,7 @@ export default function ChannelDetail({ channel, categories, channels }) {
         )}
 
         <div style={{ display: 'flex', gap: 14, marginBottom: 24 }}>
+          <StatCard label="Subscribers" value={subscribersHidden ? 'Hidden' : subscriberCount != null ? subscriberCount.toLocaleString() : '—'} c={c} />
           <StatCard label="Uploaded videos" value={postedVideos.length} c={c} />
           <StatCard label="Total views" value={totalViews.toLocaleString()} c={c} />
           <StatCard label="Total likes" value={totalLikes.toLocaleString()} c={c} />
@@ -220,7 +241,10 @@ export default function ChannelDetail({ channel, categories, channels }) {
                   <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <StatusBadge status={v.resolved_status} />
-                    {v.views != null && <span style={{ fontSize: 11, color: c.textDim }}>{v.views.toLocaleString()} views</span>}
+                    <span style={{ fontSize: 11, color: c.textDim, display: 'flex', gap: 8 }}>
+                      {v.views != null && <span>👁 {v.views.toLocaleString()}</span>}
+                      {v.comments != null && <span>💬 {v.comments.toLocaleString()}</span>}
+                    </span>
                   </div>
                 </div>
               </div>
