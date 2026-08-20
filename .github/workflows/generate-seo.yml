@@ -1,0 +1,23 @@
+name: Daily SEO Generation
+
+on:
+  schedule:
+    - cron: '0 8 * * *' # 8:00 AM UTC daily, before the posting job runs
+  workflow_dispatch: {}
+
+jobs:
+  generate-seo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install node-fetch@2 ws @supabase/supabase-js
+      - name: Generate SEO metadata for the next 10 videos
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node scripts/generate-seo.js 10
