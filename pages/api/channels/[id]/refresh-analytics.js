@@ -25,7 +25,22 @@ export default async function handler(req, res) {
       .eq('status', 'posted')
       .not('youtube_video_id', 'is', null);
 
-    if (!posted || posted.length === 0) {
+    // Manual uploads (from the "Upload a Video" popup) live in a separate
+    // table entirely — include them here too so this button actually
+    // refreshes every posted video for this channel, not just the imported ones.
+    const { data: manualPosted } = await supabaseAdmin
+      .from('channel_uploads')
+      .select('id, youtube_video_id')
+      .eq('channel_id', channelId)
+      .eq('status', 'posted')
+      .not('youtube_video_id', 'is', null);
+
+    const combined = [
+      ...(posted || []).map((p) => ({ videoId: p.video_id, youtubeVideoId: p.youtube_video_id, source: 'library' })),
+      ...(manualPosted || []).map((p) => ({ videoId: p.id, youtubeVideoId: p.youtube_video_id, source: 'manual' })),
+    ];
+
+    if (combined.length === 0) {
       return res.status(200).json({ updated: 0, autoTrashed: 0 });
     }
 
@@ -36,25 +51,30 @@ export default async function handler(req, res) {
     let updated = 0;
     let autoTrashed = 0;
 
-    for (const { video_id: videoId, youtube_video_id: youtubeVideoId } of posted) {
+    for (const { videoId, youtubeVideoId, source } of combined) {
       try {
         const statsResp = await youtube.videos.list({ part: ['statistics'], id: [youtubeVideoId] });
 
         if (!statsResp.data.items || statsResp.data.items.length === 0) {
-          await supabaseAdmin
-            .from('videos')
-            .update({ trashed_at: new Date().toISOString(), trashed_from_status: 'posted', status: 'trashed' })
-            .eq('id', videoId);
-          await supabaseAdmin
-            .from('post_queue')
-            .update({ status: 'deleted', deleted_at: new Date().toISOString() })
-            .eq('video_id', videoId)
-            .eq('youtube_video_id', youtubeVideoId);
+          if (source === 'library') {
+            await supabaseAdmin
+              .from('videos')
+              .update({ trashed_at: new Date().toISOString(), trashed_from_status: 'posted', status: 'trashed' })
+              .eq('id', videoId);
+            await supabaseAdmin
+              .from('post_queue')
+              .update({ status: 'deleted', deleted_at: new Date().toISOString() })
+              .eq('video_id', videoId)
+              .eq('youtube_video_id', youtubeVideoId);
+          } else {
+            await supabaseAdmin.from('channel_uploads').update({ status: 'failed', error_message: 'No longer exists on YouTube' }).eq('id', videoId);
+          }
           autoTrashed++;
           continue;
         }
 
-        const stats = statsResp.data.items[0].statistics;
+        const item = statsResp.data.items[0];
+        const stats = item.statistics;
         let extra = { watch_time_minutes: null, impressions: null, ctr: null };
         try {
           const anResp = await youtubeAnalytics.reports.query({

@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '../../../../lib/supabase';
 
 export default async function handler(req, res) {
-  const { id: channelId, includeTrashed } = req.query;
+  const { id: channelId } = req.query;
 
   try {
     const { data: links, error: linkErr } = await supabaseAdmin
@@ -15,23 +15,24 @@ export default async function handler(req, res) {
       return res.status(200).json({ videos: [], needsCategory: true });
     }
 
-    let videosQuery = supabaseAdmin
+    // Imported library videos (from Dropbox)
+    const { data: libraryVideos, error: vidErr } = await supabaseAdmin
       .from('videos')
       .select('id, original_title, is_short, status, category_id, created_at, trashed_at')
       .in('category_id', categoryIds)
+      .is('trashed_at', null)
       .order('created_at', { ascending: false });
-
-    if (includeTrashed !== 'true') {
-      videosQuery = videosQuery.is('trashed_at', null);
-    } else {
-      videosQuery = videosQuery.not('trashed_at', 'is', null);
-    }
-
-    const { data: videos, error: vidErr } = await videosQuery;
     if (vidErr) throw vidErr;
 
-    // ALL post_queue rows for this channel (not just latest), so we can find
-    // the most recent one per video and correctly ignore stale/deleted history
+    // Manually uploaded videos (from the "Upload a Video" popup), for THIS channel
+    const { data: manualUploads, error: uploadErr } = await supabaseAdmin
+      .from('channel_uploads')
+      .select('*')
+      .eq('channel_id', channelId)
+      .neq('status', 'deleted')
+      .order('created_at', { ascending: false });
+    if (uploadErr) throw uploadErr;
+
     const { data: queueRows, error: qErr } = await supabaseAdmin
       .from('post_queue')
       .select('video_id, status, youtube_video_id, publish_mode, scheduled_date, created_at')
@@ -44,7 +45,10 @@ export default async function handler(req, res) {
       if (!latestQueueByVideo[q.video_id]) latestQueueByVideo[q.video_id] = q;
     }
 
-    const youtubeIds = queueRows.filter((q) => q.youtube_video_id).map((q) => q.youtube_video_id);
+    const youtubeIds = [
+      ...queueRows.filter((q) => q.youtube_video_id).map((q) => q.youtube_video_id),
+      ...manualUploads.filter((u) => u.youtube_video_id).map((u) => u.youtube_video_id),
+    ];
     let snapshotByYoutubeId = {};
     if (youtubeIds.length > 0) {
       const { data: snapshots } = await supabaseAdmin
@@ -57,12 +61,10 @@ export default async function handler(req, res) {
       }
     }
 
-    const enriched = videos.map((v) => {
+    const enrichedLibrary = libraryVideos.map((v) => {
       const queue = latestQueueByVideo[v.id] || null;
       const snapshot = queue?.youtube_video_id ? snapshotByYoutubeId[queue.youtube_video_id] : null;
 
-      // Status resolution: trashed videos already filtered above; otherwise
-      // Draft = never claimed by this channel, else reflect the latest attempt.
       let resolvedStatus = 'draft';
       if (queue) {
         if (queue.status === 'posted') {
@@ -73,10 +75,11 @@ export default async function handler(req, res) {
 
       return {
         id: v.id,
+        source: 'library',
         title: v.original_title,
         is_short: v.is_short,
         created_at: v.created_at,
-        resolved_status: resolvedStatus, // draft | uploading | public | private | scheduled | failed
+        resolved_status: resolvedStatus,
         is_posted: resolvedStatus === 'public' || resolvedStatus === 'private' || resolvedStatus === 'scheduled',
         youtube_video_id: queue?.youtube_video_id || null,
         views: snapshot?.views ?? null,
@@ -85,7 +88,33 @@ export default async function handler(req, res) {
       };
     });
 
-    res.status(200).json({ videos: enriched, needsCategory: false });
+    // Manual uploads use their OWN status field directly (draft/posted/failed),
+    // not the post_queue mechanism the daily worker uses for library videos.
+    const enrichedManual = manualUploads.map((u) => {
+      const snapshot = u.youtube_video_id ? snapshotByYoutubeId[u.youtube_video_id] : null;
+      let resolvedStatus = 'draft';
+      if (u.status === 'posted') {
+        resolvedStatus = u.visibility === 'public' ? 'public' : u.visibility === 'scheduled' ? 'scheduled' : 'private';
+      } else if (u.status === 'failed') resolvedStatus = 'failed';
+
+      return {
+        id: u.id,
+        source: 'manual',
+        title: u.title || u.topic,
+        is_short: u.is_short === true,
+        created_at: u.created_at,
+        resolved_status: resolvedStatus,
+        is_posted: resolvedStatus === 'public' || resolvedStatus === 'private' || resolvedStatus === 'scheduled',
+        youtube_video_id: u.youtube_video_id,
+        views: snapshot?.views ?? null,
+        likes: snapshot?.likes ?? null,
+        comments: snapshot?.comments ?? null,
+      };
+    });
+
+    const videos = [...enrichedManual, ...enrichedLibrary].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    res.status(200).json({ videos, needsCategory: false });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });

@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../../../lib/supabase';
 import { refreshAccessToken } from '../../../lib/youtubeHelpers';
 import { checkAdminAuth } from '../../../lib/adminAuth';
+import { getYoutubeCategoryId } from '../../../lib/youtubeCategoryMap';
 import { google } from 'googleapis';
 import { Readable } from 'stream';
 
@@ -86,6 +87,7 @@ export default async function handler(req, res) {
 
         const oauth2Client = await refreshAccessToken(channel);
         const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+        const youtubeCategoryId = await getYoutubeCategoryId(supabaseAdmin, categoryId);
 
         const videoResp = await fetch(video.source_url);
         if (!videoResp.ok) throw new Error(`Failed to download video: ${videoResp.status}`);
@@ -93,8 +95,11 @@ export default async function handler(req, res) {
         const insertResp = await youtube.videos.insert({
           part: ['snippet', 'status'],
           requestBody: {
-            snippet: { title: metadata.title, description: metadata.description, tags: metadata.tags },
-            status: { privacyStatus },
+            snippet: { title: metadata.title, description: metadata.description, tags: metadata.tags, categoryId: youtubeCategoryId },
+            // Auto-posted videos are never marked as Made for Kids — that
+            // restricts features like comments and personalized ads in ways
+            // that don't fit this content.
+            status: { privacyStatus, selfDeclaredMadeForKids: false },
           },
           // Node's built-in fetch returns a Web-standard ReadableStream, but
           // googleapis' upload expects a classic Node Readable (with .pipe) —

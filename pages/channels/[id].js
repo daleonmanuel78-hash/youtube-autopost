@@ -3,10 +3,14 @@ import { useRouter } from 'next/router';
 import { supabaseAdmin } from '../../lib/supabase';
 import { getChannelsWithCounts } from '../../lib/channelsWithCounts';
 import { refreshAccessToken } from '../../lib/youtubeHelpers';
+import { getYoutubeCategoryLabel } from '../../lib/youtubeCategoryMap';
 import { google } from 'googleapis';
 import AppShell from '../../components/AppShell';
 import VideoModal from '../../components/VideoModal';
+import UploadVideoModal from '../../components/UploadVideoModal';
 import { theme } from '../../styles/theme';
+
+const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7';
 
 export async function getServerSideProps({ params }) {
   const { data: channel, error } = await supabaseAdmin.from('channels').select('*').eq('id', params.id).single();
@@ -14,6 +18,19 @@ export async function getServerSideProps({ params }) {
 
   const { data: categories } = await supabaseAdmin.from('categories').select('id, name');
   const channels = await getChannelsWithCounts();
+
+  // Which category (if any) is this channel linked to, and what YouTube
+  // category does that map to — shown read-only in the upload popup.
+  const { data: link } = await supabaseAdmin
+    .from('channel_categories')
+    .select('category_id, categories(name)')
+    .eq('channel_id', channel.id)
+    .limit(1)
+    .maybeSingle();
+  const linkedCategoryName = link?.categories?.name || null;
+  const youtubeCategoryLabel = linkedCategoryName
+    ? `${getYoutubeCategoryLabel(linkedCategoryName)} (from ${linkedCategoryName})`
+    : 'Not set — link a category first';
 
   // Pull subscriber count live from YouTube — not something we store ourselves,
   // it changes constantly and isn't worth persisting/going stale.
@@ -33,7 +50,7 @@ export async function getServerSideProps({ params }) {
     // non-fatal — page still works without this, just shows a dash
   }
 
-  return { props: { channel, categories: categories || [], channels, subscriberCount, subscribersHidden } };
+  return { props: { channel, categories: categories || [], channels, subscriberCount, subscribersHidden, youtubeCategoryLabel } };
 }
 
 const STATUS_META = {
@@ -45,7 +62,7 @@ const STATUS_META = {
   uploading: { label: 'Uploading', color: theme.colors.statusScheduled, bg: theme.colors.statusScheduledBg },
 };
 
-export default function ChannelDetail({ channel, categories, channels, subscriberCount, subscribersHidden }) {
+export default function ChannelDetail({ channel, categories, channels, subscriberCount, subscribersHidden, youtubeCategoryLabel }) {
   const router = useRouter();
   const c = theme.colors;
   const [videos, setVideos] = useState([]);
@@ -54,6 +71,7 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
   const [statusFilter, setStatusFilter] = useState('all');
   const [refreshingAnalytics, setRefreshingAnalytics] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState(null);
+  const [uploadOpen, setUploadOpen] = useState(false);
   const [selectedVideoId, setSelectedVideoId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [needsCategory, setNeedsCategory] = useState(false);
@@ -210,8 +228,12 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
           {['public', 'private', 'scheduled', 'draft', 'failed'].map((key) => (
             <StatusChip key={key} active={statusFilter === key} onClick={() => setStatusFilter(statusFilter === key ? 'all' : key)} count={statusCounts[key]} meta={STATUS_META[key]} />
           ))}
+          <button onClick={() => setUploadOpen(true)}
+            style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 14px', borderRadius: 20, border: 'none', background: theme.colors.accent, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+            + Upload a Video
+          </button>
           <button onClick={handleRefreshAnalytics} disabled={refreshingAnalytics}
-            style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 14px', borderRadius: 20, border: `1px solid ${c.border}`, background: '#fff', color: c.textDim, cursor: refreshingAnalytics ? 'default' : 'pointer' }}>
+            style={{ fontSize: 12, padding: '6px 14px', borderRadius: 20, border: `1px solid ${c.border}`, background: '#fff', color: c.textDim, cursor: refreshingAnalytics ? 'default' : 'pointer' }}>
             {refreshingAnalytics ? 'Refreshing…' : '↻ Refresh Analytics'}
           </button>
         </div>
@@ -248,7 +270,25 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
                   style={{ position: 'absolute', top: 14, left: 14, width: 16, height: 16, zIndex: 2 }} />
                 <div onClick={() => setSelectedVideoId(v.id)} style={{ cursor: 'pointer' }}>
                   {v.youtube_video_id ? (
-                    <img src={`https://i.ytimg.com/vi/${v.youtube_video_id}/hqdefault.jpg`} alt="" style={{ width: '100%', borderRadius: 6, marginBottom: 8, aspectRatio: '16/9', objectFit: 'cover', background: '#eee' }} />
+                    <img
+                      src={`https://i.ytimg.com/vi/${v.youtube_video_id}/hqdefault.jpg`}
+                      alt=""
+                      onError={(e) => {
+                        // Thumbnails can take a moment to generate on YouTube's
+                        // side, especially right after upload — retry a lower-res
+                        // variant once, then fall back to a clean placeholder
+                        // instead of the browser's broken-image icon.
+                        if (!e.target.dataset.fallback) {
+                          e.target.dataset.fallback = '1';
+                          e.target.src = `https://i.ytimg.com/vi/${v.youtube_video_id}/mqdefault.jpg`;
+                        } else {
+                          e.target.onerror = null;
+                          e.target.src = TRANSPARENT_PIXEL;
+                          e.target.style.background = '#EFEDE7';
+                        }
+                      }}
+                      style={{ width: '100%', borderRadius: 6, marginBottom: 8, aspectRatio: '16/9', objectFit: 'cover', background: '#eee' }}
+                    />
                   ) : (
                     <div style={{ width: '100%', aspectRatio: '16/9', background: '#EFEDE7', borderRadius: 6, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textDim, fontSize: 11 }}>
                       Not uploaded yet
@@ -274,6 +314,15 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
           videoId={selectedVideoId}
           onClose={() => setSelectedVideoId(null)}
           onVideoTrashed={() => load()}
+        />
+      )}
+
+      {uploadOpen && (
+        <UploadVideoModal
+          channelId={channel.id}
+          categoryLabel={youtubeCategoryLabel}
+          onClose={() => setUploadOpen(false)}
+          onUploaded={() => load()}
         />
       )}
     </AppShell>

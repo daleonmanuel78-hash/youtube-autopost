@@ -16,37 +16,55 @@ export default async function handler(req, res) {
   for (const videoId of videoIds) {
     let ytDeleteError = null;
     try {
-      const { data: video } = await supabaseAdmin.from('videos').select('*').eq('id', videoId).single();
-      if (!video) throw new Error('Video not found');
+      // A video lives in one of two places: the imported library (`videos`)
+      // or a manual upload (`channel_uploads`) — check both, since the
+      // dashboard shows them merged into one list but they're separate tables.
+      const { data: video } = await supabaseAdmin.from('videos').select('*').eq('id', videoId).maybeSingle();
 
-      const { data: queue } = await supabaseAdmin
-        .from('post_queue')
-        .select('*, channels(*)')
-        .eq('video_id', videoId)
-        .eq('status', 'posted')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      if (video) {
+        const { data: queue } = await supabaseAdmin
+          .from('post_queue')
+          .select('*, channels(*)')
+          .eq('video_id', videoId)
+          .eq('status', 'posted')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-      if (queue?.youtube_video_id && queue.channels) {
-        // Try to delete from YouTube, but don't let a failure here (e.g. the
-        // video was already deleted directly on YouTube) block us from
-        // updating our own database — that was the original bug: a failed
-        // YouTube call meant the dashboard never reflected the deletion.
+        if (queue?.youtube_video_id && queue.channels) {
+          try {
+            const oauth2Client = await refreshAccessToken(queue.channels);
+            const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
+            await youtube.videos.delete({ id: queue.youtube_video_id });
+          } catch (err) {
+            ytDeleteError = err.message;
+          }
+          await supabaseAdmin.from('post_queue').update({ status: 'deleted', deleted_at: new Date().toISOString() }).eq('id', queue.id);
+        }
+
+        await supabaseAdmin
+          .from('videos')
+          .update({ trashed_at: new Date().toISOString(), trashed_from_status: video.status, status: 'trashed' })
+          .eq('id', videoId);
+
+        results.push({ videoId, ok: true, ytDeleteError });
+        continue;
+      }
+
+      const { data: upload } = await supabaseAdmin.from('channel_uploads').select('*, channels(*)').eq('id', videoId).maybeSingle();
+      if (!upload) throw new Error('Video not found');
+
+      if (upload.youtube_video_id && upload.channels) {
         try {
-          const oauth2Client = await refreshAccessToken(queue.channels);
+          const oauth2Client = await refreshAccessToken(upload.channels);
           const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-          await youtube.videos.delete({ id: queue.youtube_video_id });
+          await youtube.videos.delete({ id: upload.youtube_video_id });
         } catch (err) {
           ytDeleteError = err.message;
         }
-        await supabaseAdmin.from('post_queue').update({ status: 'deleted', deleted_at: new Date().toISOString() }).eq('id', queue.id);
       }
 
-      await supabaseAdmin
-        .from('videos')
-        .update({ trashed_at: new Date().toISOString(), trashed_from_status: video.status, status: 'trashed' })
-        .eq('id', videoId);
+      await supabaseAdmin.from('channel_uploads').update({ status: 'deleted' }).eq('id', videoId);
 
       results.push({ videoId, ok: true, ytDeleteError });
     } catch (err) {
