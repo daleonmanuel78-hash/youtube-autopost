@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { theme } from '../styles/theme';
+import { useTheme } from '../lib/ThemeContext';
 
 export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
-  const c = theme.colors;
+  const { colors: c, font } = useTheme();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [comments, setComments] = useState([]);
@@ -107,7 +107,7 @@ export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
           resize: 'both',
           overflow: 'auto',
           padding: 24,
-          fontFamily: theme.font.body,
+          fontFamily: font.body,
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
@@ -147,7 +147,7 @@ export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
               </div>
             )}
 
-            <h2 style={{ margin: '0 0 8px 0', fontFamily: theme.font.display, fontSize: 17 }}>{data.display_title}</h2>
+            <h2 style={{ margin: '0 0 8px 0', fontFamily: font.display, fontSize: 17 }}>{data.display_title}</h2>
 
             <div style={{ fontSize: 12, color: c.textDim, marginBottom: 14 }}>
               Status: <strong style={{ color: c.text }}>{data.queue?.status || 'draft'}</strong>
@@ -161,17 +161,17 @@ export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
               </button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
-              <MiniStat label="Views" value={data.totals.views} c={c} />
-              <MiniStat label="Likes" value={data.totals.likes} c={c} />
-              <MiniStat label="Comments" value={data.totals.comments} c={c} />
-              <MiniStat label="Watch time (min)" value={data.totals.watch_time_minutes} c={c} />
+              <MiniStat label="Views" value={data.totals.views} c={c} font={font} />
+              <MiniStat label="Likes" value={data.totals.likes} c={c} font={font} />
+              <MiniStat label="Comments" value={data.totals.comments} c={c} font={font} />
+              <MiniStat label="Watch time (min)" value={data.totals.watch_time_minutes} c={c} font={font} />
             </div>
 
             <div style={{ fontSize: 13, color: c.text, whiteSpace: 'pre-wrap', marginBottom: 20, maxHeight: 120, overflowY: 'auto', border: `1px solid ${c.border}`, borderRadius: 6, padding: 10 }}>
               {data.display_description || <span style={{ color: c.textDim }}>No description yet.</span>}
             </div>
 
-            <h3 style={{ fontSize: 14, marginBottom: 10, fontFamily: theme.font.display, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h3 style={{ fontSize: 14, marginBottom: 10, fontFamily: font.display, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               Comments
               <button onClick={loadComments} style={{ fontSize: 11, color: c.textDim, background: 'none', border: `1px solid ${c.border}`, borderRadius: 6, padding: '3px 10px', cursor: 'pointer', fontWeight: 400 }}>
                 ↻ Refresh
@@ -222,7 +222,7 @@ export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
                               value={replyText}
                               onChange={(e) => setReplyText(e.target.value)}
                               placeholder="Write a reply…"
-                              style={{ width: '100%', minHeight: 50, padding: 8, border: `1px solid ${c.border}`, borderRadius: 6, fontSize: 12.5, fontFamily: theme.font.body }}
+                              style={{ width: '100%', minHeight: 50, padding: 8, border: `1px solid ${c.border}`, borderRadius: 6, fontSize: 12.5, fontFamily: font.body }}
                             />
                             {replyError && <div style={{ fontSize: 11.5, color: c.accent, marginTop: 4 }}>{replyError}</div>}
                             <button
@@ -247,10 +247,10 @@ export default function VideoModal({ videoId, onClose, onVideoTrashed }) {
   );
 }
 
-function MiniStat({ label, value, c }) {
+function MiniStat({ label, value, c, font }) {
   return (
     <div style={{ border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-      <div style={{ fontSize: 16, fontWeight: 700, fontFamily: theme.font.display }}>{value != null ? value.toLocaleString() : '—'}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, fontFamily: font.display }}>{value != null ? value.toLocaleString() : '—'}</div>
       <div style={{ fontSize: 10, color: c.textDim, marginTop: 2 }}>{label}</div>
     </div>
   );

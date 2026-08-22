@@ -1,15 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
-import { theme } from '../styles/theme';
+import { useTheme } from '../lib/ThemeContext';
 
 export default function AdminPanel() {
   const router = useRouter();
   const { from } = router.query; // channel id to return to, if opened from a channel dashboard
-  const c = theme.colors;
+  const { colors: c, font } = useTheme();
   const [secret, setSecret] = useState('');
   const [unlocked, setUnlocked] = useState(false);
   const [log, setLog] = useState([]);
   const [running, setRunning] = useState(null);
+  const [liveMode, setLiveMode] = useState(null); // null = unknown yet, true/false once loaded
+  const [liveModeBusy, setLiveModeBusy] = useState(false);
 
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? sessionStorage.getItem('admin_secret') : null;
@@ -19,9 +21,49 @@ export default function AdminPanel() {
     }
   }, []);
 
+  useEffect(() => {
+    if (unlocked) loadLiveModeStatus();
+  }, [unlocked]);
+
   function unlock() {
     sessionStorage.setItem('admin_secret', secret);
     setUnlocked(true);
+  }
+
+  async function loadLiveModeStatus() {
+    try {
+      const resp = await fetch('/api/admin/live-mode/status', { headers: { 'x-admin-secret': secret } });
+      const data = await resp.json();
+      if (resp.ok) setLiveMode(data.enabled);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function toggleLiveMode() {
+    setLiveModeBusy(true);
+    try {
+      const resp = await fetch('/api/admin/live-mode/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
+        body: JSON.stringify({ enable: !liveMode }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setLiveMode(data.enabled);
+        // Turning Live Mode on shouldn't mean waiting until the next 6 PM
+        // slot for the first post — fire one off immediately too.
+        if (data.enabled) {
+          runAction('post-public', '/api/admin/daily-post', { privacyStatus: 'public' });
+        }
+      } else {
+        setLog([data.error || 'Failed to toggle Live Mode.']);
+      }
+    } catch (err) {
+      setLog([`Request failed: ${err.message}`]);
+    } finally {
+      setLiveModeBusy(false);
+    }
   }
 
   async function runAction(name, url, body) {
@@ -50,17 +92,17 @@ export default function AdminPanel() {
 
   if (!unlocked) {
     return (
-      <div style={{ fontFamily: theme.font.body, maxWidth: 400, margin: '80px auto', padding: 24 }}>
-        <h2 style={{ fontFamily: theme.font.display }}>Admin Panel</h2>
+      <div style={{ fontFamily: font.body, maxWidth: 400, margin: '80px auto', padding: 24 }}>
+        <h2 style={{ fontFamily: font.display }}>Admin Panel</h2>
         <input
           type="password"
           placeholder="Admin password"
           value={secret}
           onChange={(e) => setSecret(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && unlock()}
-          style={{ width: '100%', padding: 10, marginBottom: 12, border: `1px solid ${c.border}`, borderRadius: 6 }}
+          style={{ width: '100%', padding: 10, marginBottom: 12, border: `1px solid ${c.border}`, borderRadius: 6, background: c.cardBg, color: c.text }}
         />
-        <button onClick={unlock} style={{ width: '100%', padding: 10, background: c.text, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+        <button onClick={unlock} style={{ width: '100%', padding: 10, background: c.statusScheduled, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
           Unlock
         </button>
       </div>
@@ -68,26 +110,52 @@ export default function AdminPanel() {
   }
 
   return (
-    <div style={{ fontFamily: theme.font.body, maxWidth: 700, margin: '0 auto', padding: 32, background: c.bg, minHeight: '100vh' }}>
+    <div style={{ fontFamily: font.body, maxWidth: 700, margin: '0 auto', padding: 32, background: c.bg, minHeight: '100vh', color: c.text }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-        <h1 style={{ fontFamily: theme.font.display, margin: 0 }}>Admin Panel</h1>
+        <h1 style={{ fontFamily: font.display, margin: 0 }}>Admin Panel</h1>
         <button
           onClick={() => router.push(from ? `/channels/${from}` : '/')}
-          style={{ fontSize: 12, padding: '8px 14px', borderRadius: 8, border: `1px solid ${c.border}`, background: '#fff', cursor: 'pointer' }}
+          style={{ fontSize: 12, padding: '8px 14px', borderRadius: 8, border: 'none', background: c.statusScheduled, color: '#fff', cursor: 'pointer', fontWeight: 600 }}
         >
           ← Back {from ? 'to channel' : 'to channels'}
         </button>
       </div>
       <p style={{ color: c.textDim, fontSize: 13 }}>Manual controls for testing and running jobs on demand.</p>
 
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        border: `1px solid ${liveMode ? c.statusPublic : c.border}`, borderRadius: 10, padding: '14px 18px', marginBottom: 20,
+        background: liveMode ? c.statusPublicBg : c.cardBg,
+      }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+            {liveMode && <span style={{ width: 8, height: 8, borderRadius: '50%', background: c.statusPublic, display: 'inline-block' }} />}
+            Live Mode {liveMode === null ? '' : liveMode ? '— ON' : '— OFF'}
+          </div>
+          <div style={{ fontSize: 12, color: c.textDim, marginTop: 2 }}>
+            When on, one video per category posts automatically every day at 6:00 PM US Eastern time.
+          </div>
+        </div>
+        <button
+          onClick={toggleLiveMode}
+          disabled={liveMode === null || liveModeBusy}
+          style={{
+            padding: '9px 18px', borderRadius: 8, border: 'none', cursor: liveModeBusy ? 'default' : 'pointer',
+            background: liveMode ? c.statusFailed : c.statusPublic, color: '#fff', fontWeight: 700, fontSize: 13, flexShrink: 0,
+          }}
+        >
+          {liveModeBusy ? 'Working…' : liveMode ? 'Stop' : 'Go Live'}
+        </button>
+      </div>
+
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
-        <ActionButton label="Post today's video (private test)" running={running === 'post-private'} c={c}
+        <ActionButton label="Post today's video (private test)" running={running === 'post-private'} c={c} bg={c.statusScheduled}
           onClick={() => runAction('post-private', '/api/admin/daily-post', { privacyStatus: 'private' })} />
-        <ActionButton label="Post today's video (PUBLIC)" running={running === 'post-public'} danger c={c}
+        <ActionButton label="Post today's video (PUBLIC)" running={running === 'post-public'} c={c} bg={c.accent}
           onClick={() => runAction('post-public', '/api/admin/daily-post', { privacyStatus: 'public' })} />
-        <ActionButton label="Generate SEO (next 10)" running={running === 'seo'} c={c}
+        <ActionButton label="Generate SEO (next 10)" running={running === 'seo'} c={c} bg={c.statusScheduled}
           onClick={() => runAction('seo', '/api/admin/generate-seo', { count: 10 })} />
-        <ActionButton label="Refresh analytics" running={running === 'analytics'} c={c}
+        <ActionButton label="Refresh analytics" running={running === 'analytics'} c={c} bg={c.statusPublic}
           onClick={() => runAction('analytics', '/api/admin/refresh-analytics', {})} />
       </div>
 
@@ -98,14 +166,14 @@ export default function AdminPanel() {
   );
 }
 
-function ActionButton({ label, onClick, running, danger, c }) {
+function ActionButton({ label, onClick, running, c, bg }) {
   return (
     <button
       onClick={onClick}
       disabled={!!running}
       style={{
         padding: '10px 16px',
-        background: danger ? c.accent : c.text,
+        background: bg,
         color: '#fff',
         border: 'none',
         borderRadius: 8,

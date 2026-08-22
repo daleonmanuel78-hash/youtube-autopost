@@ -1,12 +1,18 @@
 name: Daily YouTube Post
 
-# PAUSED — the automatic schedule below is commented out on purpose.
-# Nothing will post automatically until this is turned back on.
-# You can still trigger a manual run any time from the Actions tab (it now
-# defaults to private, as an extra safety net).
+# Live Mode (the toggle in the Admin Panel) controls whether this actually
+# runs — it calls GitHub's API to enable/disable this workflow entirely.
+# The schedule below only matters while enabled.
+#
+# NOTE on timing: GitHub Actions cron runs in UTC and does not auto-adjust
+# for US Daylight Saving Time. 22:00 UTC = 6:00 PM US Eastern during
+# Daylight Time (spring–fall) but becomes 5:00 PM Eastern during Standard
+# Time (fall–spring). If you want it locked to exactly 6:00 PM year-round,
+# this cron value needs to be manually flipped between 22:00 and 23:00 UTC
+# at the twice-yearly clock change.
 on:
-  # schedule:
-  #   - cron: '0 9 * * *' # 9:00 AM UTC daily — uncomment to re-enable automatic posting
+  schedule:
+    - cron: '0 22 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -18,4 +24,4 @@ jobs:
           curl -f -X POST "https://youtube-autopost-ii0e.onrender.com/api/admin/daily-post" \
             -H "Content-Type: application/json" \
             -H "x-admin-secret: ${{ secrets.ADMIN_SECRET }}" \
-            -d '{"privacyStatus":"private"}'
+            -d '{"privacyStatus":"public"}'

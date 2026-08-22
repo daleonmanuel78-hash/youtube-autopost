@@ -29,7 +29,6 @@ export default async function handler(req, res) {
       .from('channel_uploads')
       .select('*')
       .eq('channel_id', channelId)
-      .neq('status', 'deleted')
       .order('created_at', { ascending: false });
     if (uploadErr) throw uploadErr;
 
@@ -82,6 +81,7 @@ export default async function handler(req, res) {
         resolved_status: resolvedStatus,
         is_posted: resolvedStatus === 'public' || resolvedStatus === 'private' || resolvedStatus === 'scheduled',
         youtube_video_id: queue?.youtube_video_id || null,
+        custom_thumbnail_url: null,
         views: snapshot?.views ?? null,
         likes: snapshot?.likes ?? null,
         comments: snapshot?.comments ?? null,
@@ -102,6 +102,7 @@ export default async function handler(req, res) {
         source: 'manual',
         title: u.title || u.topic,
         is_short: u.is_short === true,
+        custom_thumbnail_url: u.custom_thumbnail_url || null,
         created_at: u.created_at,
         resolved_status: resolvedStatus,
         is_posted: resolvedStatus === 'public' || resolvedStatus === 'private' || resolvedStatus === 'scheduled',

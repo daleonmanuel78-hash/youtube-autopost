@@ -1,5 +1,7 @@
 import { supabaseAdmin } from '../../../lib/supabase';
 import { refreshAccessToken } from '../../../lib/youtubeHelpers';
+import { insertNotification } from '../../../lib/notifications';
+import { sendNotificationEmail } from '../../../lib/email';
 import { google } from 'googleapis';
 
 // Deletes selected videos from YouTube (if they were actually posted there)
@@ -12,6 +14,7 @@ export default async function handler(req, res) {
   if (!Array.isArray(videoIds) || videoIds.length === 0) return res.status(400).json({ error: 'videoIds required' });
 
   const results = [];
+  const deletedByChannel = {}; // channel name -> count, for the notification summary
 
   for (const videoId of videoIds) {
     let ytDeleteError = null;
@@ -40,6 +43,8 @@ export default async function handler(req, res) {
             ytDeleteError = err.message;
           }
           await supabaseAdmin.from('post_queue').update({ status: 'deleted', deleted_at: new Date().toISOString() }).eq('id', queue.id);
+          const chName = queue.channels.name || 'channel';
+          deletedByChannel[chName] = (deletedByChannel[chName] || 0) + 1;
         }
 
         await supabaseAdmin
@@ -62,6 +67,8 @@ export default async function handler(req, res) {
         } catch (err) {
           ytDeleteError = err.message;
         }
+        const chName = upload.channels.name || 'channel';
+        deletedByChannel[chName] = (deletedByChannel[chName] || 0) + 1;
       }
 
       await supabaseAdmin.from('channel_uploads').update({ status: 'deleted' }).eq('id', videoId);
@@ -70,6 +77,17 @@ export default async function handler(req, res) {
     } catch (err) {
       results.push({ videoId, ok: false, error: err.message });
     }
+  }
+
+  const totalDeleted = results.filter((r) => r.ok).length;
+  if (totalDeleted > 0) {
+    const channelSummary = Object.entries(deletedByChannel)
+      .map(([name, count]) => `${count} from ${name}`)
+      .join(', ');
+    const title = `${totalDeleted} video(s) deleted${channelSummary ? ` (${channelSummary})` : ''} successfully`;
+    const summaryLines = results.map((r) => (r.ok ? `✓ ${r.videoId}${r.ytDeleteError ? ` (YouTube delete warning: ${r.ytDeleteError})` : ''}` : `✗ ${r.videoId}: ${r.error}`));
+    await insertNotification('delete-video', 'success', title, summaryLines);
+    await sendNotificationEmail(`YT AutoPosting: ${title}`, summaryLines);
   }
 
   res.status(200).json({ results });

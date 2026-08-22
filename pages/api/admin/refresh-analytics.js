@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../../../lib/supabase';
 import { refreshAccessToken } from '../../../lib/youtubeHelpers';
 import { checkAdminAuth } from '../../../lib/adminAuth';
+import { insertNotification } from '../../../lib/notifications';
 import { google } from 'googleapis';
 
 function todayDateString() {
@@ -107,9 +108,11 @@ export default async function handler(req, res) {
       }
     }
     add(`Done. ${updated} snapshot(s) updated, ${autoTrashed} auto-trashed (deleted on YouTube).`);
+    await insertNotification('refresh-analytics', 'success', `${updated} updated, ${autoTrashed} auto-trashed`, log);
     res.status(200).json({ log });
   } catch (err) {
     add(`Fatal error: ${err.message}`);
+    await insertNotification('refresh-analytics', 'failed', `Fatal error: ${err.message}`, log);
     res.status(500).json({ log, error: err.message });
   }
 }

@@ -2,6 +2,8 @@ import { supabaseAdmin } from '../../../lib/supabase';
 import { refreshAccessToken } from '../../../lib/youtubeHelpers';
 import { checkAdminAuth } from '../../../lib/adminAuth';
 import { getYoutubeCategoryId } from '../../../lib/youtubeCategoryMap';
+import { sendNotificationEmail } from '../../../lib/email';
+import { insertNotification } from '../../../lib/notifications';
 import { google } from 'googleapis';
 import { Readable } from 'stream';
 
@@ -50,17 +52,35 @@ export default async function handler(req, res) {
           continue;
         }
         const categoryId = links[0].category_id;
+        const today = todayDateString();
 
-        const { data: videos } = await supabaseAdmin
+        // Skip any video that already has a post_queue claim for THIS channel
+        // today — whether that earlier attempt succeeded or failed. Without
+        // this, a video that failed once (e.g. a transient network timeout)
+        // keeps getting re-selected on every retry for the rest of the day,
+        // hitting the same "already claimed" conflict every single time.
+        const { data: alreadyClaimedToday } = await supabaseAdmin
+          .from('post_queue')
+          .select('video_id')
+          .eq('channel_id', channel.id)
+          .eq('scheduled_date', today);
+        const claimedIds = (alreadyClaimedToday || []).map((r) => r.video_id);
+
+        let videoQuery = supabaseAdmin
           .from('videos')
           .select('*')
           .eq('category_id', categoryId)
           .eq('status', 'pending')
           .order('created_at', { ascending: true })
           .limit(1);
+        if (claimedIds.length > 0) {
+          videoQuery = videoQuery.not('id', 'in', `(${claimedIds.join(',')})`);
+        }
+
+        const { data: videos } = await videoQuery;
         const video = videos && videos[0];
         if (!video) {
-          add('No pending videos left. Skipping.');
+          add('No pending videos left (or all remaining ones already attempted today). Skipping.');
           continue;
         }
         add(`Selected: ${video.original_title}`);
@@ -121,9 +141,25 @@ export default async function handler(req, res) {
     }
 
     add('Done.');
+
+    const successCount = log.filter((l) => l.startsWith('✓')).length;
+    const failCount = log.filter((l) => l.startsWith('✗')).length;
+    await sendNotificationEmail(
+      `YT AutoPosting: ${successCount} posted, ${failCount} failed — ${todayDateString()}`,
+      log
+    );
+    await insertNotification(
+      'daily-post',
+      failCount > 0 && successCount === 0 ? 'failed' : 'success',
+      `${successCount} posted, ${failCount} failed`,
+      log
+    );
+
     res.status(200).json({ log });
   } catch (err) {
     add(`Fatal error: ${err.message}`);
+    await sendNotificationEmail(`YT AutoPosting: Fatal error — ${todayDateString()}`, log);
+    await insertNotification('daily-post', 'failed', `Fatal error: ${err.message}`, log);
     res.status(500).json({ log, error: err.message });
   }
 }

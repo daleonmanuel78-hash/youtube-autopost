@@ -1,6 +1,8 @@
 import { supabaseAdmin } from '../../../../lib/supabase';
 import { refreshAccessToken } from '../../../../lib/youtubeHelpers';
 import { getYoutubeCategoryId } from '../../../../lib/youtubeCategoryMap';
+import { insertNotification } from '../../../../lib/notifications';
+import { sendNotificationEmail } from '../../../../lib/email';
 import { google } from 'googleapis';
 import formidable from 'formidable';
 import fs from 'fs';
@@ -87,24 +89,38 @@ export default async function handler(req, res) {
     }
     const youtubeVideoId = insertResp.data.id;
 
-    // If a thumbnail was generated in the popup, apply it now. This is
-    // best-effort and non-blocking — YouTube requires the channel to have a
-    // verified phone number to accept custom thumbnails at all, so this can
-    // legitimately fail even when everything else works; we don't want that
-    // to undo an otherwise-successful video upload.
+    // If a thumbnail was generated in the popup, we always save it to our own
+    // Storage first (so the dashboard has a real featured image regardless of
+    // what happens next), then try to also apply it on YouTube. That YouTube
+    // step is best-effort — it requires the channel to have a verified phone
+    // number, so it can legitimately fail even when everything else works.
     const thumbnailDataUrl = get('thumbnailDataUrl');
     let thumbnailError = null;
+    let customThumbnailUrl = null;
     if (thumbnailDataUrl) {
+      const base64 = thumbnailDataUrl.split(',')[1];
+      const thumbBuffer = Buffer.from(base64, 'base64');
+
       try {
-        const base64 = thumbnailDataUrl.split(',')[1];
-        const thumbBuffer = Buffer.from(base64, 'base64');
+        const storagePath = `thumbnails/${channelId}-${Date.now()}.jpg`;
+        const { error: storageErr } = await supabaseAdmin.storage
+          .from('channel-uploads')
+          .upload(storagePath, thumbBuffer, { contentType: 'image/jpeg', upsert: true });
+        if (storageErr) throw storageErr;
+        const { data: publicUrlData } = supabaseAdmin.storage.from('channel-uploads').getPublicUrl(storagePath);
+        customThumbnailUrl = publicUrlData.publicUrl;
+      } catch (err) {
+        console.error('Failed to save thumbnail to storage:', err.message);
+      }
+
+      try {
         await youtube.thumbnails.set({
           videoId: youtubeVideoId,
           media: { mimeType: 'image/jpeg', body: require('stream').Readable.from(thumbBuffer) },
         });
       } catch (err) {
         thumbnailError = err.message;
-        console.error('Thumbnail upload failed:', err.message);
+        console.error('Thumbnail upload to YouTube failed:', err.message);
       }
     }
 
@@ -124,14 +140,31 @@ export default async function handler(req, res) {
         status: 'posted',
         gemini_generated: aiGenerated,
         is_short: isShort,
+        custom_thumbnail_url: customThumbnailUrl,
       })
       .select()
       .single();
     if (insertErr) throw insertErr;
 
+    const { data: channelInfo } = await supabaseAdmin.from('channels').select('name').eq('id', channelId).single();
+    const visibilityLabel = scheduledAt ? 'scheduled' : visibility;
+    const summaryLines = [`Topic: ${topic}`, `Title: ${title}`, `Visibility: ${visibilityLabel}`, `YouTube ID: ${youtubeVideoId}`, thumbnailError ? `Thumbnail: failed (${thumbnailError})` : 'Thumbnail: applied'].filter(Boolean);
+    await insertNotification(
+      'manual-upload',
+      'success',
+      `New video uploaded to ${channelInfo?.name || 'channel'} (${visibilityLabel}): "${title}"`,
+      summaryLines
+    );
+    await sendNotificationEmail(
+      `YT AutoPosting: Manual video uploaded to ${channelInfo?.name || 'channel'}`,
+      summaryLines
+    );
+
     res.status(200).json({ ok: true, status: 'posted', youtubeVideoId, upload: row, thumbnailError });
   } catch (err) {
     console.error(err);
+    await insertNotification('manual-upload', 'failed', `Manual upload failed: ${err.message}`, [err.message]);
+    await sendNotificationEmail('YT AutoPosting: Manual upload FAILED', [err.message]);
     res.status(500).json({ error: err.message });
   } finally {
     if (tempFilePath) {

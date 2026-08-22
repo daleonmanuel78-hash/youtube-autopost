@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import { supabaseAdmin } from '../../lib/supabase';
 import { getChannelsWithCounts } from '../../lib/channelsWithCounts';
@@ -8,9 +8,8 @@ import { google } from 'googleapis';
 import AppShell from '../../components/AppShell';
 import VideoModal from '../../components/VideoModal';
 import UploadVideoModal from '../../components/UploadVideoModal';
-import { theme } from '../../styles/theme';
-
-const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBTAA7';
+import SafeThumbnail from '../../components/SafeThumbnail';
+import { useTheme } from '../../lib/ThemeContext';
 
 export async function getServerSideProps({ params }) {
   const { data: channel, error } = await supabaseAdmin.from('channels').select('*').eq('id', params.id).single();
@@ -53,18 +52,21 @@ export async function getServerSideProps({ params }) {
   return { props: { channel, categories: categories || [], channels, subscriberCount, subscribersHidden, youtubeCategoryLabel } };
 }
 
-const STATUS_META = {
-  public: { label: 'Public', color: theme.colors.statusPublic, bg: theme.colors.statusPublicBg },
-  private: { label: 'Private', color: theme.colors.statusPrivate, bg: theme.colors.statusPrivateBg },
-  scheduled: { label: 'Scheduled', color: theme.colors.statusScheduled, bg: theme.colors.statusScheduledBg },
-  draft: { label: 'Draft', color: theme.colors.statusDraft, bg: theme.colors.statusDraftBg },
-  failed: { label: 'Failed', color: theme.colors.statusFailed, bg: theme.colors.statusFailedBg },
-  uploading: { label: 'Uploading', color: theme.colors.statusScheduled, bg: theme.colors.statusScheduledBg },
-};
+function getStatusMeta(c) {
+  return {
+    public: { label: 'Public', color: c.statusPublic, bg: c.statusPublicBg },
+    private: { label: 'Private', color: c.statusPrivate, bg: c.statusPrivateBg },
+    scheduled: { label: 'Scheduled', color: c.statusScheduled, bg: c.statusScheduledBg },
+    draft: { label: 'Draft', color: c.statusDraft, bg: c.statusDraftBg },
+    failed: { label: 'Failed', color: c.statusFailed, bg: c.statusFailedBg },
+    uploading: { label: 'Uploading', color: c.statusScheduled, bg: c.statusScheduledBg },
+  };
+}
 
 export default function ChannelDetail({ channel, categories, channels, subscriberCount, subscribersHidden, youtubeCategoryLabel }) {
   const router = useRouter();
-  const c = theme.colors;
+  const { colors: c, font } = useTheme();
+  const STATUS_META = getStatusMeta(c);
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('long');
@@ -72,6 +74,8 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
   const [refreshingAnalytics, setRefreshingAnalytics] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'list'
+  const [sortBy, setSortBy] = useState('newest'); // 'newest' | 'oldest' | 'az' | 'za' | 'views'
   const [selectedVideoId, setSelectedVideoId] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [needsCategory, setNeedsCategory] = useState(false);
@@ -97,10 +101,6 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
   const draftVideos = videos.filter((v) => v.resolved_status === 'draft');
   const failedVideos = videos.filter((v) => v.resolved_status === 'failed');
 
-  const shorts = postedVideos.filter((v) => v.is_short === true);
-  const longform = postedVideos.filter((v) => v.is_short !== true);
-  const activeList = tab === 'short' ? shorts : tab === 'long' ? longform : tab === 'draft' ? draftVideos : failedVideos;
-
   const statusCounts = {
     public: postedVideos.filter((v) => v.resolved_status === 'public').length,
     private: postedVideos.filter((v) => v.resolved_status === 'private').length,
@@ -109,7 +109,28 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
     failed: failedVideos.length,
   };
 
-  const filtered = statusFilter === 'all' ? activeList : activeList.filter((v) => v.resolved_status === statusFilter);
+  // Status chip narrows the list first; Long-form/Shorts tabs then split
+  // whatever that narrowed set is — e.g. clicking "Draft" then "Shorts"
+  // shows only draft videos that are Shorts, nothing redundant like a
+  // separate "Drafts" tab inside an already-Draft-filtered view.
+  // Default view (no chip selected) shows only Public/Private/Scheduled —
+  // Draft and Failed each have their own dedicated chip to view them
+  // explicitly, so they don't clutter the main list by default.
+  const statusFilteredVideos =
+    statusFilter === 'all'
+      ? postedVideos
+      : videos.filter((v) => v.resolved_status === statusFilter);
+  const shorts = statusFilteredVideos.filter((v) => v.is_short === true);
+  const longform = statusFilteredVideos.filter((v) => v.is_short !== true);
+  const activeList = tab === 'short' ? shorts : longform;
+
+  const sorted = [...activeList].sort((a, b) => {
+    if (sortBy === 'az') return (a.title || '').localeCompare(b.title || '');
+    if (sortBy === 'za') return (b.title || '').localeCompare(a.title || '');
+    if (sortBy === 'oldest') return new Date(a.created_at) - new Date(b.created_at);
+    if (sortBy === 'views') return (b.views || 0) - (a.views || 0);
+    return new Date(b.created_at) - new Date(a.created_at); // 'newest' default
+  });
   const totalViews = postedVideos.reduce((sum, v) => sum + (v.views || 0), 0);
   const totalLikes = postedVideos.reduce((sum, v) => sum + (v.likes || 0), 0);
 
@@ -171,21 +192,55 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
     router.push('/');
   }
 
+  const [logoUploading, setLogoUploading] = useState(false);
+  const logoInputRef = useRef(null);
+
+  async function handleLogoUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setLogoUploading(true);
+    const formData = new FormData();
+    formData.append('logo', file);
+    try {
+      await fetch(`/api/channels/${channel.id}/upload-logo`, { method: 'POST', body: formData });
+      router.replace(router.asPath); // reload to pick up the new logo everywhere (header + sidebar)
+    } finally {
+      setLogoUploading(false);
+    }
+  }
+
   return (
     <AppShell channels={channels} activeChannelId={channel.id}>
       <div style={{ maxWidth: 1040, margin: '0 auto', padding: '28px 32px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            {channel.thumbnail_url && <img src={channel.thumbnail_url} alt="" width={48} height={48} style={{ borderRadius: '50%' }} />}
+            <div style={{ position: 'relative', flexShrink: 0 }}>
+              {(channel.custom_logo_url || channel.thumbnail_url) && (
+                <img src={channel.custom_logo_url || channel.thumbnail_url} alt="" width={48} height={48} style={{ borderRadius: '50%', objectFit: 'cover' }} />
+              )}
+              <button
+                onClick={() => logoInputRef.current?.click()}
+                disabled={logoUploading}
+                title="Upload a custom photo (dashboard display only — doesn't change your real YouTube avatar)"
+                style={{
+                  position: 'absolute', bottom: -2, right: -2, width: 20, height: 20, borderRadius: '50%',
+                  background: c.accent, border: `2px solid ${c.bg}`, color: '#fff', fontSize: 10, cursor: logoUploading ? 'default' : 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+                }}
+              >
+                {logoUploading ? '…' : '📷'}
+              </button>
+              <input ref={logoInputRef} type="file" accept="image/*" onChange={handleLogoUpload} style={{ display: 'none' }} />
+            </div>
             <div>
               {renaming ? (
                 <div style={{ display: 'flex', gap: 6 }}>
                   <input value={nameInput} onChange={(e) => setNameInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleRename()}
-                    style={{ fontFamily: theme.font.display, fontSize: 20, fontWeight: 700, border: `1px solid ${c.border}`, borderRadius: 6, padding: '2px 8px' }} autoFocus />
-                  <button onClick={handleRename} style={{ fontSize: 12, padding: '0 10px', borderRadius: 6, border: 'none', background: c.text, color: '#fff', cursor: 'pointer' }}>Save</button>
+                    style={{ fontFamily: font.display, fontSize: 20, fontWeight: 700, border: `1px solid ${c.border}`, borderRadius: 6, padding: '2px 8px' }} autoFocus />
+                  <button onClick={handleRename} style={{ fontSize: 12, padding: '0 10px', borderRadius: 6, border: 'none', background: c.statusScheduled, color: '#fff', cursor: 'pointer' }}>Save</button>
                 </div>
               ) : (
-                <h1 style={{ fontFamily: theme.font.display, fontSize: 22, margin: 0, cursor: 'pointer' }} onClick={() => setRenaming(true)} title="Click to rename">
+                <h1 style={{ fontFamily: font.display, fontSize: 22, margin: 0, cursor: 'pointer' }} onClick={() => setRenaming(true)} title="Click to rename">
                   {channel.name}
                 </h1>
               )}
@@ -193,10 +248,10 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button onClick={handleArchive} style={{ fontSize: 12, padding: '8px 14px', borderRadius: 8, border: `1px solid ${c.border}`, background: '#fff', color: c.textDim, cursor: 'pointer' }}>
+            <button onClick={handleArchive} style={{ fontSize: 12, padding: '8px 14px', borderRadius: 8, border: 'none', background: c.statusFailed, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
               Remove channel
             </button>
-            <button onClick={() => router.push(`/admin?from=${channel.id}`)} style={{ fontSize: 12, padding: '8px 14px', borderRadius: 8, border: 'none', background: c.text, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+            <button onClick={() => router.push(`/admin?from=${channel.id}`)} style={{ fontSize: 12, padding: '8px 14px', borderRadius: 8, border: 'none', background: c.statusScheduled, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
               Go to Admin Panel
             </button>
           </div>
@@ -218,10 +273,10 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
         )}
 
         <div style={{ display: 'flex', gap: 14, marginBottom: 24 }}>
-          <StatCard label="Subscribers" value={subscribersHidden ? 'Hidden' : subscriberCount != null ? subscriberCount.toLocaleString() : '—'} c={c} />
-          <StatCard label="Uploaded videos" value={postedVideos.length} c={c} />
-          <StatCard label="Total views" value={totalViews.toLocaleString()} c={c} />
-          <StatCard label="Total likes" value={totalLikes.toLocaleString()} c={c} />
+          <StatCard label="Subscribers" value={subscribersHidden ? 'Hidden' : subscriberCount != null ? subscriberCount.toLocaleString() : '—'} c={c} font={font} />
+          <StatCard label="Uploaded videos" value={postedVideos.length} c={c} font={font} />
+          <StatCard label="Total views" value={totalViews.toLocaleString()} c={c} font={font} />
+          <StatCard label="Total likes" value={totalLikes.toLocaleString()} c={c} font={font} />
         </div>
 
         <div style={{ display: 'flex', gap: 8, marginBottom: refreshMessage ? 8 : 20, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -229,11 +284,11 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
             <StatusChip key={key} active={statusFilter === key} onClick={() => setStatusFilter(statusFilter === key ? 'all' : key)} count={statusCounts[key]} meta={STATUS_META[key]} />
           ))}
           <button onClick={() => setUploadOpen(true)}
-            style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 14px', borderRadius: 20, border: 'none', background: theme.colors.accent, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+            style={{ marginLeft: 'auto', fontSize: 12, padding: '6px 14px', borderRadius: 20, border: 'none', background: c.accent, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
             + Upload a Video
           </button>
           <button onClick={handleRefreshAnalytics} disabled={refreshingAnalytics}
-            style={{ fontSize: 12, padding: '6px 14px', borderRadius: 20, border: `1px solid ${c.border}`, background: '#fff', color: c.textDim, cursor: refreshingAnalytics ? 'default' : 'pointer' }}>
+            style={{ fontSize: 12, padding: '6px 14px', borderRadius: 20, border: 'none', background: c.statusPublic, color: '#fff', cursor: refreshingAnalytics ? 'default' : 'pointer', fontWeight: 600 }}>
             {refreshingAnalytics ? 'Refreshing…' : '↻ Refresh Analytics'}
           </button>
         </div>
@@ -247,56 +302,76 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
         <div style={{ display: 'flex', gap: 4, marginBottom: 4, borderBottom: `1px solid ${c.border}` }}>
           <TabButton active={tab === 'long'} onClick={() => setTab('long')} c={c}>Long-form ({longform.length})</TabButton>
           <TabButton active={tab === 'short'} onClick={() => setTab('short')} c={c}>Shorts ({shorts.length})</TabButton>
-          <TabButton active={tab === 'draft'} onClick={() => setTab('draft')} c={c}>Drafts ({draftVideos.length})</TabButton>
-          <TabButton active={tab === 'failed'} onClick={() => setTab('failed')} c={c}>Failed ({failedVideos.length})</TabButton>
         </div>
 
         {selectedIds.size > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: c.text, color: '#fff', borderRadius: 8, padding: '8px 14px', margin: '12px 0', fontSize: 13 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#15161B', color: '#fff', borderRadius: 8, padding: '8px 14px', margin: '12px 0', fontSize: 13 }}>
             <span>{selectedIds.size} selected</span>
             <button disabled={busy} onClick={handleDeleteSelected} style={{ marginLeft: 'auto', background: c.accent, color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>Delete</button>
           </div>
         )}
 
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, marginBottom: 8, flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ display: 'flex', border: `1px solid ${c.border}`, borderRadius: 8, overflow: 'hidden' }}>
+            <button onClick={() => setViewMode('grid')}
+              style={{ padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'grid' ? c.text : c.cardBg, color: viewMode === 'grid' ? c.bg : c.textDim, fontWeight: 600 }}>
+              ▦ Grid
+            </button>
+            <button onClick={() => setViewMode('list')}
+              style={{ padding: '6px 12px', fontSize: 12, border: 'none', cursor: 'pointer', background: viewMode === 'list' ? c.text : c.cardBg, color: viewMode === 'list' ? c.bg : c.textDim, fontWeight: 600 }}>
+              ☰ List
+            </button>
+          </div>
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+            style={{ fontSize: 12, padding: '7px 10px', borderRadius: 8, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text }}>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="az">Title A–Z</option>
+            <option value="za">Title Z–A</option>
+            <option value="views">Most viewed</option>
+          </select>
+        </div>
+
         {loading ? (
           <p style={{ color: c.textDim, marginTop: 20 }}>Loading videos…</p>
-        ) : filtered.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <p style={{ color: c.textDim, marginTop: 20 }}>Nothing here.</p>
+        ) : viewMode === 'list' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+            {sorted.map((v) => (
+              <div key={v.id} onClick={() => setSelectedVideoId(v.id)} style={{ display: 'flex', alignItems: 'center', gap: 12, border: `1px solid ${c.border}`, borderRadius: 8, padding: '8px 12px', background: c.cardBg, cursor: 'pointer' }}>
+                <input type="checkbox" checked={selectedIds.has(v.id)} onClick={(e) => e.stopPropagation()} onChange={() => toggleSelect(v.id)} style={{ width: 16, height: 16, flexShrink: 0 }} />
+                <div style={{ width: 72, height: 40, borderRadius: 4, overflow: 'hidden', flexShrink: 0 }}>
+                  <SafeThumbnail youtubeVideoId={v.youtube_video_id} customThumbnailUrl={v.custom_thumbnail_url} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</div>
+                <StatusBadge status={v.resolved_status} statusMeta={STATUS_META} />
+                <div style={{ fontSize: 11.5, color: c.textDim, display: 'flex', gap: 10, width: 130, flexShrink: 0, justifyContent: 'flex-end' }}>
+                  {v.views != null && <span>👁 {v.views.toLocaleString()}</span>}
+                  {v.comments != null && <span>💬 {v.comments.toLocaleString()}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 12, marginTop: 16 }}>
-            {filtered.map((v) => (
+            {sorted.map((v) => (
               <div key={v.id} style={{ border: `1px solid ${c.border}`, borderRadius: 10, padding: 10, background: c.cardBg, position: 'relative' }}>
                 <input type="checkbox" checked={selectedIds.has(v.id)} onChange={() => toggleSelect(v.id)}
                   style={{ position: 'absolute', top: 14, left: 14, width: 16, height: 16, zIndex: 2 }} />
                 <div onClick={() => setSelectedVideoId(v.id)} style={{ cursor: 'pointer' }}>
                   {v.youtube_video_id ? (
-                    <img
-                      src={`https://i.ytimg.com/vi/${v.youtube_video_id}/hqdefault.jpg`}
-                      alt=""
-                      onError={(e) => {
-                        // Thumbnails can take a moment to generate on YouTube's
-                        // side, especially right after upload — retry a lower-res
-                        // variant once, then fall back to a clean placeholder
-                        // instead of the browser's broken-image icon.
-                        if (!e.target.dataset.fallback) {
-                          e.target.dataset.fallback = '1';
-                          e.target.src = `https://i.ytimg.com/vi/${v.youtube_video_id}/mqdefault.jpg`;
-                        } else {
-                          e.target.onerror = null;
-                          e.target.src = TRANSPARENT_PIXEL;
-                          e.target.style.background = '#EFEDE7';
-                        }
-                      }}
-                      style={{ width: '100%', borderRadius: 6, marginBottom: 8, aspectRatio: '16/9', objectFit: 'cover', background: '#eee' }}
-                    />
+                    <div style={{ width: '100%', aspectRatio: '16/9', borderRadius: 6, marginBottom: 8, overflow: 'hidden' }}>
+                      <SafeThumbnail youtubeVideoId={v.youtube_video_id} customThumbnailUrl={v.custom_thumbnail_url} style={{ borderRadius: 0 }} />
+                    </div>
                   ) : (
-                    <div style={{ width: '100%', aspectRatio: '16/9', background: '#EFEDE7', borderRadius: 6, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textDim, fontSize: 11 }}>
+                    <div style={{ width: '100%', aspectRatio: '16/9', background: c.border, borderRadius: 6, marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', color: c.textDim, fontSize: 11 }}>
                       Not uploaded yet
                     </div>
                   )}
                   <div style={{ fontWeight: 600, fontSize: 12.5, marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title}</div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <StatusBadge status={v.resolved_status} />
+                    <StatusBadge status={v.resolved_status} statusMeta={STATUS_META} />
                     <span style={{ fontSize: 11, color: c.textDim, display: 'flex', gap: 8 }}>
                       {v.views != null && <span>👁 {v.views.toLocaleString()}</span>}
                       {v.comments != null && <span>💬 {v.comments.toLocaleString()}</span>}
@@ -322,18 +397,18 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
           channelId={channel.id}
           categoryLabel={youtubeCategoryLabel}
           onClose={() => setUploadOpen(false)}
-          onUploaded={() => load()}
+          onUploaded={() => { load(); router.replace(router.asPath); }}
         />
       )}
     </AppShell>
   );
 }
 
-function StatCard({ label, value, c }) {
+function StatCard({ label, value, c, font }) {
   return (
     <div style={{ border: `1px solid ${c.border}`, borderRadius: 10, padding: '14px 16px', flex: 1, background: c.cardBg }}>
       <div style={{ fontSize: 11.5, color: c.textDim, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontFamily: theme.font.display, fontSize: 24, fontWeight: 700 }}>{value}</div>
+      <div style={{ fontFamily: font.display, fontSize: 24, fontWeight: 700 }}>{value}</div>
     </div>
   );
 }
@@ -354,7 +429,7 @@ function StatusChip({ active, onClick, count, meta }) {
   );
 }
 
-function StatusBadge({ status }) {
-  const meta = STATUS_META[status] || STATUS_META.draft;
+function StatusBadge({ status, statusMeta }) {
+  const meta = statusMeta[status] || statusMeta.draft;
   return <span style={{ fontSize: 10.5, fontWeight: 700, color: meta.color, background: meta.bg, borderRadius: 4, padding: '2px 7px' }}>{meta.label}</span>;
 }
