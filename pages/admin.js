@@ -15,6 +15,16 @@ export default function AdminPanel() {
   const [running, setRunning] = useState(null);
   const [liveMode, setLiveMode] = useState(null); // null = unknown yet, true/false once loaded
   const [liveModeBusy, setLiveModeBusy] = useState(false);
+  const [draftsOpen, setDraftsOpen] = useState(false);
+  const [drafts, setDrafts] = useState([]);
+  const [draftsLoading, setDraftsLoading] = useState(false);
+  const [draftsPage, setDraftsPage] = useState(1);
+  const [draftsTotalPages, setDraftsTotalPages] = useState(1);
+  const [draftsTotalCount, setDraftsTotalCount] = useState(0);
+  const [draftsSearch, setDraftsSearch] = useState('');
+  const [draftsCategory, setDraftsCategory] = useState('');
+  const [draftsCategories, setDraftsCategories] = useState([]);
+  const [expandedDraftId, setExpandedDraftId] = useState(null);
 
   useEffect(() => {
     const saved = typeof window !== 'undefined' ? sessionStorage.getItem('admin_secret') : null;
@@ -123,6 +133,31 @@ export default function AdminPanel() {
       setLog([`Request failed: ${err.message}`]);
     } finally {
       setRunning(null);
+    }
+  }
+
+  async function loadDrafts(page = draftsPage) {
+    setDraftsLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page) });
+      if (draftsSearch) params.set('search', draftsSearch);
+      if (draftsCategory) params.set('categoryId', draftsCategory);
+      const resp = await fetch(`/api/admin/drafts?${params}`, { headers: { 'x-admin-secret': secret } });
+      const data = await resp.json();
+      if (resp.status === 401) {
+        setUnlocked(false);
+        sessionStorage.removeItem('admin_secret');
+        return;
+      }
+      setDrafts(data.videos || []);
+      setDraftsTotalPages(data.totalPages || 1);
+      setDraftsTotalCount(data.totalCount || 0);
+      setDraftsCategories(data.categories || []);
+      setDraftsPage(page);
+    } catch (err) {
+      console.error('Failed to load drafts:', err.message);
+    } finally {
+      setDraftsLoading(false);
     }
   }
 
@@ -257,6 +292,92 @@ export default function AdminPanel() {
 
       <div style={{ background: '#15161B', color: '#4ADE80', fontFamily: 'monospace', fontSize: 12, padding: 16, borderRadius: 10, minHeight: 200, whiteSpace: 'pre-wrap' }}>
         {log.length === 0 ? 'No output yet. Click a button above.' : log.join('\n')}
+      </div>
+
+      <div style={{ marginTop: 28 }}>
+        <button
+          onClick={() => { const next = !draftsOpen; setDraftsOpen(next); if (next && drafts.length === 0) loadDrafts(1); }}
+          style={{ fontSize: 13, fontWeight: 700, padding: '10px 16px', borderRadius: 8, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, cursor: 'pointer' }}
+        >
+          {draftsOpen ? '▾' : '▸'} View Drafts (not-yet-posted videos)
+        </button>
+
+        {draftsOpen && (
+          <div style={{ marginTop: 12, border: `1px solid ${c.border}`, borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', gap: 8, padding: 12, borderBottom: `1px solid ${c.border}`, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                placeholder="Search by title..."
+                value={draftsSearch}
+                onChange={(e) => setDraftsSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && loadDrafts(1)}
+                style={{ flex: 1, minWidth: 160, padding: '7px 10px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, fontSize: 12.5 }}
+              />
+              <select
+                value={draftsCategory}
+                onChange={(e) => { setDraftsCategory(e.target.value); }}
+                style={{ padding: '7px 10px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, fontSize: 12.5 }}
+              >
+                <option value="">All categories</option>
+                {draftsCategories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>{cat.name}</option>
+                ))}
+              </select>
+              <button onClick={() => loadDrafts(1)} style={{ fontSize: 12.5, padding: '7px 14px', borderRadius: 6, border: 'none', background: c.statusScheduled, color: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+                Search
+              </button>
+              <span style={{ fontSize: 11.5, color: c.textDim, marginLeft: 'auto' }}>
+                {draftsTotalCount.toLocaleString()} pending video(s) total
+              </span>
+            </div>
+
+            {draftsLoading ? (
+              <div style={{ padding: 24, textAlign: 'center', color: c.textDim, fontSize: 13 }}>Loading…</div>
+            ) : drafts.length === 0 ? (
+              <div style={{ padding: 24, textAlign: 'center', color: c.textDim, fontSize: 13 }}>No drafts match this filter.</div>
+            ) : (
+              <div>
+                {drafts.map((d) => (
+                  <div key={d.id} style={{ borderBottom: `1px solid ${c.border}` }}>
+                    <button
+                      onClick={() => setExpandedDraftId(expandedDraftId === d.id ? null : d.id)}
+                      style={{ width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none', border: 'none', cursor: 'pointer' }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: c.text, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {d.title}
+                        </span>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: c.statusScheduledBg, color: c.statusScheduled }}>
+                          {d.category}
+                        </span>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 10, background: d.seoReady ? c.statusPublicBg : c.statusDraftBg, color: d.seoReady ? c.statusPublic : c.statusDraft }}>
+                          {d.seoReady ? 'SEO ready' : 'No SEO yet'}
+                        </span>
+                      </div>
+                    </button>
+                    {expandedDraftId === d.id && (
+                      <div style={{ padding: '0 14px 14px', fontSize: 12.5, color: c.textDim }}>
+                        <div style={{ marginBottom: 6 }}><strong style={{ color: c.text }}>Caption:</strong> {d.caption || '—'}</div>
+                        <div><strong style={{ color: c.text }}>Tags:</strong> {d.tags.length > 0 ? d.tags.join(', ') : '—'}</div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12 }}>
+              <button onClick={() => draftsPage > 1 && loadDrafts(draftsPage - 1)} disabled={draftsPage <= 1}
+                style={{ fontSize: 12, padding: '6px 12px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, cursor: draftsPage <= 1 ? 'default' : 'pointer', opacity: draftsPage <= 1 ? 0.5 : 1 }}>
+                ← Prev
+              </button>
+              <span style={{ fontSize: 12, color: c.textDim }}>Page {draftsPage} of {draftsTotalPages}</span>
+              <button onClick={() => draftsPage < draftsTotalPages && loadDrafts(draftsPage + 1)} disabled={draftsPage >= draftsTotalPages}
+                style={{ fontSize: 12, padding: '6px 12px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, cursor: draftsPage >= draftsTotalPages ? 'default' : 'pointer', opacity: draftsPage >= draftsTotalPages ? 0.5 : 1 }}>
+                Next →
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
