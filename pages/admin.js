@@ -30,13 +30,22 @@ export default function AdminPanel() {
     setUnlocked(true);
   }
 
+  const [liveModeError, setLiveModeError] = useState(null);
+
   async function loadLiveModeStatus() {
+    setLiveModeError(null);
     try {
       const resp = await fetch('/api/admin/live-mode/status', { headers: { 'x-admin-secret': secret } });
       const data = await resp.json();
-      if (resp.ok) setLiveMode(data.enabled);
+      if (resp.ok) {
+        setLiveMode(data.enabled);
+      } else {
+        setLiveModeError(data.error || 'Failed to check Live Mode status.');
+        setLiveMode(false); // don't leave the button stuck disabled forever — assume off, let them retry
+      }
     } catch (err) {
-      console.error(err);
+      setLiveModeError(err.message);
+      setLiveMode(false);
     }
   }
 
@@ -147,6 +156,15 @@ export default function AdminPanel() {
           {liveModeBusy ? 'Working…' : liveMode ? 'Stop' : 'Go Live'}
         </button>
       </div>
+
+      {liveModeError && (
+        <div style={{ fontSize: 12.5, color: c.statusFailed, background: c.statusFailedBg, borderRadius: 8, padding: '10px 14px', marginTop: -12, marginBottom: 20 }}>
+          ⚠ Couldn't check Live Mode status: {liveModeError}. This usually means GITHUB_TOKEN is missing or invalid on this server.
+          <button onClick={loadLiveModeStatus} style={{ marginLeft: 10, fontSize: 11.5, textDecoration: 'underline', background: 'none', border: 'none', color: c.statusFailed, cursor: 'pointer', padding: 0 }}>
+            Retry
+          </button>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
         <ActionButton label="Post today's video (private test)" running={running === 'post-private'} c={c} bg={c.statusScheduled}
