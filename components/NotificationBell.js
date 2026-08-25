@@ -22,6 +22,12 @@ export default function NotificationBell() {
       .then((d) => {
         setNotifications(d.notifications || []);
         setUnreadCount(d.unreadCount || 0);
+      })
+      .catch((err) => {
+        // A transient failure (e.g. the dev server recompiling mid-request)
+        // shouldn't crash the whole page — just skip this poll and try
+        // again on the next interval.
+        console.warn('Notification poll failed, will retry:', err.message);
       });
   }
 
@@ -43,9 +49,13 @@ export default function NotificationBell() {
     const next = !open;
     setOpen(next);
     if (next && unreadCount > 0) {
-      await fetch('/api/notifications/mark-read', { method: 'POST' });
-      setUnreadCount(0);
-      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      try {
+        await fetch('/api/notifications/mark-read', { method: 'POST' });
+        setUnreadCount(0);
+        setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+      } catch (err) {
+        console.warn('Failed to mark notifications read:', err.message);
+      }
     }
   }
 
@@ -75,8 +85,21 @@ export default function NotificationBell() {
           position: 'absolute', top: 44, right: 0, width: 340, maxHeight: 420, overflowY: 'auto',
           background: c.cardBg, border: `1px solid ${c.border}`, borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,0.2)', zIndex: 100,
         }}>
-          <div style={{ padding: '12px 16px', borderBottom: `1px solid ${c.border}`, fontWeight: 700, fontSize: 13, fontFamily: font.display }}>
-            Recent activity
+          <div style={{ padding: '12px 16px', borderBottom: `1px solid ${c.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontWeight: 700, fontSize: 13, fontFamily: font.display }}>Recent activity</span>
+            {notifications.length > 0 && (
+              <button
+                onClick={async () => {
+                  if (!confirm('Clear all notifications? This cannot be undone.')) return;
+                  await fetch('/api/notifications/clear-all', { method: 'POST' });
+                  setNotifications([]);
+                  setUnreadCount(0);
+                }}
+                style={{ fontSize: 11, color: c.textDim, background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+              >
+                Clear all
+              </button>
+            )}
           </div>
           {notifications.length === 0 ? (
             <div style={{ padding: 20, fontSize: 12.5, color: c.textDim, textAlign: 'center' }}>Nothing yet.</div>

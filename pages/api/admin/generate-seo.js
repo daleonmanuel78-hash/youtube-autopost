@@ -1,6 +1,7 @@
 import { supabaseAdmin } from '../../../lib/supabase';
 import { checkAdminAuth } from '../../../lib/adminAuth';
 import { insertNotification } from '../../../lib/notifications';
+import { sendNotificationEmail } from '../../../lib/email';
 
 function buildPrompt(video) {
   return `You are optimizing metadata for a YouTube video. You are given the creator's
@@ -100,16 +101,14 @@ export default async function handler(req, res) {
       }
     }
     add(`Done. ${succeeded}/${toProcess.length} succeeded.`);
-    await insertNotification(
-      'generate-seo',
-      succeeded === toProcess.length || toProcess.length === 0 ? 'success' : 'failed',
-      `${succeeded}/${toProcess.length} SEO generated`,
-      log
-    );
+    const title = `${succeeded}/${toProcess.length} SEO generated`;
+    await insertNotification('generate-seo', succeeded === toProcess.length || toProcess.length === 0 ? 'success' : 'failed', title, log);
+    await sendNotificationEmail(`YT AutoPosting: ${title}`, log);
     res.status(200).json({ log });
   } catch (err) {
     add(`Fatal error: ${err.message}`);
     await insertNotification('generate-seo', 'failed', `Fatal error: ${err.message}`, log);
+    await sendNotificationEmail('YT AutoPosting: SEO generation FAILED', log);
     res.status(500).json({ log, error: err.message });
   }
 }
