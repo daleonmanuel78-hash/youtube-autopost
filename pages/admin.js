@@ -126,6 +126,36 @@ export default function AdminPanel() {
     }
   }
 
+  async function testEmail() {
+    setRunning('test-email');
+    setLog(['Sending a test email...']);
+    try {
+      const resp = await fetch('/api/admin/test-email', { headers: { 'x-admin-secret': secret } });
+      const data = await resp.json();
+      if (resp.status === 401) {
+        setLog(['Unauthorized — check your admin password.']);
+        setUnlocked(false);
+        sessionStorage.removeItem('admin_secret');
+        return;
+      }
+      if (data.success) {
+        setLog([`✓ Test email sent successfully to ${data.sentTo}.`, `Message ID: ${data.messageId}`, 'Check that inbox (and spam folder) now.']);
+      } else {
+        setLog([
+          '✗ Test email failed.',
+          data.reason || `Error: ${data.errorMessage}`,
+          data.errorCode ? `Error code: ${data.errorCode}` : '',
+          data.sentFrom ? `Sending from: ${data.sentFrom}` : '',
+          data.sentTo ? `Sending to: ${data.sentTo}` : '',
+        ].filter(Boolean));
+      }
+    } catch (err) {
+      setLog([`Request failed: ${err.message}`]);
+    } finally {
+      setRunning(null);
+    }
+  }
+
   if (!unlocked) {
     return (
       <div style={{ fontFamily: font.body, maxWidth: 400, margin: '80px auto', padding: 24 }}>
@@ -221,6 +251,8 @@ export default function AdminPanel() {
           onClick={() => runAction('seo', '/api/admin/generate-seo', { count: 10 })} />
         <ActionButton label="Refresh analytics" running={running === 'analytics'} c={c} bg={c.statusPublic}
           onClick={() => runAction('analytics', '/api/admin/refresh-analytics', {})} />
+        <ActionButton label="✉ Test email" running={running === 'test-email'} c={c} bg={c.statusDraft}
+          onClick={testEmail} />
       </div>
 
       <div style={{ background: '#15161B', color: '#4ADE80', fontFamily: 'monospace', fontSize: 12, padding: 16, borderRadius: 10, minHeight: 200, whiteSpace: 'pre-wrap' }}>
