@@ -8,6 +8,9 @@ export default function AdminPanel() {
   const { colors: c, font } = useTheme();
   const [secret, setSecret] = useState('');
   const [unlocked, setUnlocked] = useState(false);
+  const [unlockError, setUnlockError] = useState(null);
+  const [unlocking, setUnlocking] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [log, setLog] = useState([]);
   const [running, setRunning] = useState(null);
   const [liveMode, setLiveMode] = useState(null); // null = unknown yet, true/false once loaded
@@ -25,9 +28,34 @@ export default function AdminPanel() {
     if (unlocked) loadLiveModeStatus();
   }, [unlocked]);
 
-  function unlock() {
-    sessionStorage.setItem('admin_secret', secret);
-    setUnlocked(true);
+  async function unlock() {
+    setUnlockError(null);
+    if (!secret.trim()) {
+      setUnlockError('Please enter a password.');
+      return;
+    }
+    setUnlocking(true);
+    try {
+      // Verify against the server before ever showing the panel — this used
+      // to just accept whatever was typed and only fail later on some other
+      // action, which was confusing. Reusing live-mode/status here since
+      // it's already admin-gated and side-effect-free; a 401 specifically
+      // means the password itself was wrong, any other response means the
+      // password is correct even if something else (like GitHub) has its
+      // own separate problem.
+      const resp = await fetch('/api/admin/live-mode/status', { headers: { 'x-admin-secret': secret } });
+      if (resp.status === 401) {
+        setUnlockError('Incorrect password.');
+        setUnlocking(false);
+        return;
+      }
+      sessionStorage.setItem('admin_secret', secret);
+      setUnlocked(true);
+    } catch (err) {
+      setUnlockError(`Couldn't verify password: ${err.message}`);
+    } finally {
+      setUnlocking(false);
+    }
   }
 
   const [liveModeError, setLiveModeError] = useState(null);
@@ -60,11 +88,10 @@ export default function AdminPanel() {
       const data = await resp.json();
       if (resp.ok) {
         setLiveMode(data.enabled);
-        // Turning Live Mode on shouldn't mean waiting until the next 6 PM
-        // slot for the first post — fire one off immediately too.
-        if (data.enabled) {
-          runAction('post-public', '/api/admin/daily-post', { privacyStatus: 'public' });
-        }
+        // No instant post here anymore — with a real 12-hour schedule now
+        // in place, an extra post-on-toggle would just make the timing
+        // unpredictable depending on which day you happen to flip this.
+        // The next post happens automatically at the next scheduled slot.
       } else {
         setLog([data.error || 'Failed to toggle Live Mode.']);
       }
@@ -103,16 +130,35 @@ export default function AdminPanel() {
     return (
       <div style={{ fontFamily: font.body, maxWidth: 400, margin: '80px auto', padding: 24 }}>
         <h2 style={{ fontFamily: font.display }}>Admin Panel</h2>
-        <input
-          type="password"
-          placeholder="Admin password"
-          value={secret}
-          onChange={(e) => setSecret(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && unlock()}
-          style={{ width: '100%', padding: 10, marginBottom: 12, border: `1px solid ${c.border}`, borderRadius: 6, background: c.cardBg, color: c.text }}
-        />
-        <button onClick={unlock} style={{ width: '100%', padding: 10, background: c.statusScheduled, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontWeight: 600 }}>
-          Unlock
+        <div style={{ position: 'relative', marginBottom: 12 }}>
+          <input
+            type={showPassword ? 'text' : 'password'}
+            placeholder="Admin password"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && unlock()}
+            style={{ width: '100%', padding: '10px 40px 10px 10px', border: `1px solid ${c.border}`, borderRadius: 6, background: c.cardBg, color: c.text, boxSizing: 'border-box' }}
+          />
+          <button
+            onClick={() => setShowPassword((s) => !s)}
+            type="button"
+            title={showPassword ? 'Hide password' : 'Show password'}
+            style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 15, color: c.textDim, padding: 4 }}
+          >
+            {showPassword ? '🙈' : '👁'}
+          </button>
+        </div>
+        {unlockError && (
+          <div style={{ fontSize: 12.5, color: c.statusFailed, background: c.statusFailedBg, borderRadius: 6, padding: '8px 10px', marginBottom: 12 }}>
+            {unlockError}
+          </div>
+        )}
+        <button
+          onClick={unlock}
+          disabled={unlocking}
+          style={{ width: '100%', padding: 10, background: c.statusScheduled, color: '#fff', border: 'none', borderRadius: 6, cursor: unlocking ? 'default' : 'pointer', fontWeight: 600, opacity: unlocking ? 0.7 : 1 }}
+        >
+          {unlocking ? 'Checking…' : 'Unlock'}
         </button>
       </div>
     );
@@ -142,7 +188,7 @@ export default function AdminPanel() {
             Live Mode {liveMode === null ? '' : liveMode ? '— ON' : '— OFF'}
           </div>
           <div style={{ fontSize: 12, color: c.textDim, marginTop: 2 }}>
-            When on, one video per category posts automatically every day at 6:00 PM US Eastern time.
+            When on, one video per category posts automatically twice a day, 12 hours apart (around 6:00 AM and 6:00 PM US Eastern).
           </div>
         </div>
         <button

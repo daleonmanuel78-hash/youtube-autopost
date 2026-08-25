@@ -1,12 +1,15 @@
 name: Daily SEO Generation
 
+# Runs 1 hour before each posting slot (see daily-post.yml) so freshly
+# generated metadata is ready in time for that run — same 12-hour cadence,
+# offset earlier.
 on:
   schedule:
-    - cron: '0 8 * * *' # 8:00 AM UTC daily, before the posting job runs
+    - cron: '0 9,21 * * *'
   workflow_dispatch: {}
 
 jobs:
-  trigger:
+  generate-seo:
     runs-on: ubuntu-latest
     steps:
       - name: Ping the admin panel's generate-seo endpoint

@@ -147,6 +147,7 @@ export default function ChannelDetail({ channel, categories, channels, subscribe
     await fetch('/api/videos/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ videoIds: [...selectedIds] }) });
     setBusy(false);
     load();
+    router.replace(router.asPath); // belt-and-suspenders refresh, same fix as manual upload
   }
 
   async function handleRefreshAnalytics() {
