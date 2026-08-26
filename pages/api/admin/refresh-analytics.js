@@ -3,6 +3,7 @@ import { refreshAccessToken } from '../../../lib/youtubeHelpers';
 import { checkAdminAuth } from '../../../lib/adminAuth';
 import { insertNotification } from '../../../lib/notifications';
 import { sendNotificationEmail } from '../../../lib/email';
+import { isYoutubeShort } from '../../../lib/detectShorts';
 import { google } from 'googleapis';
 
 function todayDateString() {
@@ -19,7 +20,7 @@ export default async function handler(req, res) {
   try {
     const { data: posted } = await supabaseAdmin
       .from('post_queue')
-      .select('video_id, youtube_video_id, channel_id')
+      .select('video_id, youtube_video_id, channel_id, publish_mode')
       .eq('status', 'posted')
       .not('youtube_video_id', 'is', null);
 
@@ -31,7 +32,7 @@ export default async function handler(req, res) {
     const byChannel = {};
     for (const row of posted) {
       if (!byChannel[row.channel_id]) byChannel[row.channel_id] = [];
-      byChannel[row.channel_id].push({ videoId: row.video_id, youtubeVideoId: row.youtube_video_id });
+      byChannel[row.channel_id].push({ videoId: row.video_id, youtubeVideoId: row.youtube_video_id, publishMode: row.publish_mode });
     }
 
     const { data: channels } = await supabaseAdmin.from('channels').select('*');
@@ -49,7 +50,7 @@ export default async function handler(req, res) {
       const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
       const youtubeAnalytics = google.youtubeAnalytics({ version: 'v2', auth: oauth2Client });
 
-      for (const { videoId, youtubeVideoId } of videos) {
+      for (const { videoId, youtubeVideoId, publishMode } of videos) {
         try {
           const statsResp = await youtube.videos.list({ part: ['statistics'], id: [youtubeVideoId] });
 
@@ -72,6 +73,19 @@ export default async function handler(req, res) {
           }
 
           const stats = statsResp.data.items[0].statistics;
+
+          // Self-heal Shorts/Long-form classification for library videos —
+          // the original 1,313 Dropbox-imported videos never had real
+          // duration/orientation captured at import time, using YouTube's
+          // own /shorts/ URL behavior as the authoritative signal this time
+          // (more reliable than the thumbnail-dimension heuristic we tried
+          // before). Only works for public videos.
+          if (publishMode === 'public') {
+            const reallyIsShort = await isYoutubeShort(youtubeVideoId);
+            if (reallyIsShort !== null) {
+              await supabaseAdmin.from('videos').update({ is_short: reallyIsShort }).eq('id', videoId);
+            }
+          }
 
           let extra = { watch_time_minutes: null, impressions: null, ctr: null };
           try {

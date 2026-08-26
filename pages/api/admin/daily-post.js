@@ -2,6 +2,7 @@ import { supabaseAdmin } from '../../../lib/supabase';
 import { refreshAccessToken } from '../../../lib/youtubeHelpers';
 import { checkAdminAuth } from '../../../lib/adminAuth';
 import { getYoutubeCategoryId } from '../../../lib/youtubeCategoryMap';
+import { isYoutubeShort } from '../../../lib/detectShorts';
 import { sendNotificationEmail } from '../../../lib/email';
 import { insertNotification } from '../../../lib/notifications';
 import { google } from 'googleapis';
@@ -130,6 +131,18 @@ export default async function handler(req, res) {
 
         await supabaseAdmin.from('post_queue').update({ status: 'posted', youtube_video_id: youtubeVideoId }).eq('id', claim.id);
         await supabaseAdmin.from('videos').update({ status: 'posted' }).eq('id', video.id);
+
+        // Correct the Shorts/Long-form classification using YouTube's own
+        // determination — the original 1,313 Dropbox-imported videos never
+        // had real duration/orientation data captured, so they'd otherwise
+        // sit in the wrong tab forever. Only works reliably once a video is
+        // actually public (private videos aren't checkable this way).
+        if (privacyStatus === 'public') {
+          const reallyIsShort = await isYoutubeShort(youtubeVideoId);
+          if (reallyIsShort !== null) {
+            await supabaseAdmin.from('videos').update({ is_short: reallyIsShort }).eq('id', video.id);
+          }
+        }
 
         add(`✓ Uploaded: https://youtube.com/watch?v=${youtubeVideoId}`);
       } catch (err) {

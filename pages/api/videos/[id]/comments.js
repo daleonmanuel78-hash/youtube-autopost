@@ -2,30 +2,54 @@ import { supabaseAdmin } from '../../../../lib/supabase';
 import { refreshAccessToken } from '../../../../lib/youtubeHelpers';
 import { google } from 'googleapis';
 
+// A video lives in one of two places: the imported library (post_queue) or
+// a manual upload (channel_uploads) — comments previously only checked the
+// first, so manually-uploaded videos could never load their comments at all.
+async function findVideoAndChannel(videoId) {
+  const { data: queue } = await supabaseAdmin
+    .from('post_queue')
+    .select('youtube_video_id, channels(*)')
+    .eq('video_id', videoId)
+    .eq('status', 'posted')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (queue?.youtube_video_id && queue.channels) {
+    return { youtubeVideoId: queue.youtube_video_id, channel: queue.channels };
+  }
+
+  const { data: upload } = await supabaseAdmin
+    .from('channel_uploads')
+    .select('youtube_video_id, channels(*)')
+    .eq('id', videoId)
+    .eq('status', 'posted')
+    .maybeSingle();
+
+  if (upload?.youtube_video_id && upload.channels) {
+    return { youtubeVideoId: upload.youtube_video_id, channel: upload.channels };
+  }
+
+  return null;
+}
+
 export default async function handler(req, res) {
   const { id: videoId } = req.query;
 
   try {
-    const { data: queue } = await supabaseAdmin
-      .from('post_queue')
-      .select('youtube_video_id, channels(*)')
-      .eq('video_id', videoId)
-      .eq('status', 'posted')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (!queue?.youtube_video_id || !queue.channels) {
+    const found = await findVideoAndChannel(videoId);
+    if (!found) {
       return res.status(200).json({ comments: [], notPostedYet: true });
     }
+    const { youtubeVideoId, channel } = found;
 
-    const oauth2Client = await refreshAccessToken(queue.channels);
+    const oauth2Client = await refreshAccessToken(channel);
     const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
 
     if (req.method === 'GET') {
       const resp = await youtube.commentThreads.list({
         part: ['snippet', 'replies'],
-        videoId: queue.youtube_video_id,
+        videoId: youtubeVideoId,
         maxResults: 50,
         order: 'time',
       });
