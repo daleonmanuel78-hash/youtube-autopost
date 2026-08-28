@@ -253,7 +253,7 @@ export default function AdminPanel() {
             Live Mode {liveMode === null ? '' : liveMode ? '— ON' : '— OFF'}
           </div>
           <div style={{ fontSize: 12, color: c.textDim, marginTop: 2 }}>
-            When on, one video per category posts automatically twice a day, 12 hours apart (around 6:00 AM and 6:00 PM US Eastern).
+            When on, one video per category posts automatically once a day, around 6:00 PM US Eastern (reduced from twice daily to stay within Render's free bandwidth limit).
           </div>
         </div>
         <button
