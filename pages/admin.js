@@ -2,9 +2,24 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import { useTheme } from '../lib/ThemeContext';
 
+const TIMEZONE_OPTIONS = [
+  { label: 'United States — Eastern', value: 'America/New_York' },
+  { label: 'United States — Central', value: 'America/Chicago' },
+  { label: 'United States — Mountain', value: 'America/Denver' },
+  { label: 'United States — Pacific', value: 'America/Los_Angeles' },
+  { label: 'Philippines', value: 'Asia/Manila' },
+  { label: 'United Kingdom', value: 'Europe/London' },
+  { label: 'Australia — Sydney', value: 'Australia/Sydney' },
+  { label: 'India', value: 'Asia/Kolkata' },
+  { label: 'Japan', value: 'Asia/Tokyo' },
+  { label: 'Canada — Eastern', value: 'America/Toronto' },
+  { label: 'Germany', value: 'Europe/Berlin' },
+  { label: 'Singapore', value: 'Asia/Singapore' },
+];
+
 export default function AdminPanel() {
   const router = useRouter();
-  const { from } = router.query; // channel id to return to, if opened from a channel dashboard
+  const { from } = router.query;
   const { colors: c, font } = useTheme();
   const [secret, setSecret] = useState('');
   const [unlocked, setUnlocked] = useState(false);
@@ -13,8 +28,17 @@ export default function AdminPanel() {
   const [showPassword, setShowPassword] = useState(false);
   const [log, setLog] = useState([]);
   const [running, setRunning] = useState(null);
-  const [liveMode, setLiveMode] = useState(null); // null = unknown yet, true/false once loaded
+
+  const [liveMode, setLiveMode] = useState(null);
   const [liveModeBusy, setLiveModeBusy] = useState(false);
+  const [liveModeError, setLiveModeError] = useState(null);
+
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleTimezone, setScheduleTimezone] = useState('America/New_York');
+  const [scheduleTimes, setScheduleTimes] = useState(['18:00']);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [scheduleMessage, setScheduleMessage] = useState(null);
+
   const [draftsOpen, setDraftsOpen] = useState(false);
   const [drafts, setDrafts] = useState([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -35,7 +59,10 @@ export default function AdminPanel() {
   }, []);
 
   useEffect(() => {
-    if (unlocked) loadLiveModeStatus();
+    if (unlocked) {
+      loadLiveModeStatus();
+      loadSchedule();
+    }
   }, [unlocked]);
 
   async function unlock() {
@@ -46,13 +73,6 @@ export default function AdminPanel() {
     }
     setUnlocking(true);
     try {
-      // Verify against the server before ever showing the panel — this used
-      // to just accept whatever was typed and only fail later on some other
-      // action, which was confusing. Reusing live-mode/status here since
-      // it's already admin-gated and side-effect-free; a 401 specifically
-      // means the password itself was wrong, any other response means the
-      // password is correct even if something else (like GitHub) has its
-      // own separate problem.
       const resp = await fetch('/api/admin/live-mode/status', { headers: { 'x-admin-secret': secret } });
       if (resp.status === 401) {
         setUnlockError('Incorrect password.');
@@ -68,8 +88,6 @@ export default function AdminPanel() {
     }
   }
 
-  const [liveModeError, setLiveModeError] = useState(null);
-
   async function loadLiveModeStatus() {
     setLiveModeError(null);
     try {
@@ -79,7 +97,7 @@ export default function AdminPanel() {
         setLiveMode(data.enabled);
       } else {
         setLiveModeError(data.error || 'Failed to check Live Mode status.');
-        setLiveMode(false); // don't leave the button stuck disabled forever — assume off, let them retry
+        setLiveMode(false);
       }
     } catch (err) {
       setLiveModeError(err.message);
@@ -98,10 +116,6 @@ export default function AdminPanel() {
       const data = await resp.json();
       if (resp.ok) {
         setLiveMode(data.enabled);
-        // No instant post here anymore — with a real 12-hour schedule now
-        // in place, an extra post-on-toggle would just make the timing
-        // unpredictable depending on which day you happen to flip this.
-        // The next post happens automatically at the next scheduled slot.
       } else {
         setLog([data.error || 'Failed to toggle Live Mode.']);
       }
@@ -112,28 +126,53 @@ export default function AdminPanel() {
     }
   }
 
-  async function runAction(name, url, body) {
-    setRunning(name);
-    setLog([`Running ${name}...`]);
+  async function loadSchedule() {
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch('/api/admin/live-mode/schedule', { headers: { 'x-admin-secret': secret } });
+      const data = await resp.json();
+      if (resp.ok) {
+        setScheduleTimezone(data.timezone);
+        setScheduleTimes(data.post_times || ['18:00']);
+      }
+    } catch (err) {
+      console.error('Failed to load schedule:', err.message);
+    }
+  }
+
+  async function saveSchedule() {
+    setScheduleSaving(true);
+    setScheduleMessage(null);
+    try {
+      const resp = await fetch('/api/admin/live-mode/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
-        body: JSON.stringify(body || {}),
+        body: JSON.stringify({ timezone: scheduleTimezone, postTimes: scheduleTimes }),
       });
       const data = await resp.json();
-      if (resp.status === 401) {
-        setLog(['Unauthorized — check your admin password.']);
-        setUnlocked(false);
-        sessionStorage.removeItem('admin_secret');
-        return;
+      if (resp.ok) {
+        setScheduleMessage('✓ Saved. New times take effect on the next scheduled check.');
+      } else {
+        setScheduleMessage(`✗ ${data.error || 'Failed to save.'}`);
       }
-      setLog(data.log || [data.error || 'No response']);
     } catch (err) {
-      setLog([`Request failed: ${err.message}`]);
+      setScheduleMessage(`✗ ${err.message}`);
     } finally {
-      setRunning(null);
+      setScheduleSaving(false);
     }
+  }
+
+  function addTimeSlot() {
+    setScheduleTimes([...scheduleTimes, '18:00']);
+  }
+
+  function updateTimeSlot(index, value) {
+    const next = [...scheduleTimes];
+    next[index] = value;
+    setScheduleTimes(next);
+  }
+
+  function removeTimeSlot(index) {
+    setScheduleTimes(scheduleTimes.filter((_, i) => i !== index));
   }
 
   async function loadDrafts(page = draftsPage) {
@@ -158,6 +197,30 @@ export default function AdminPanel() {
       console.error('Failed to load drafts:', err.message);
     } finally {
       setDraftsLoading(false);
+    }
+  }
+
+  async function runAction(name, url, body) {
+    setRunning(name);
+    setLog([`Running ${name}...`]);
+    try {
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-admin-secret': secret },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await resp.json();
+      if (resp.status === 401) {
+        setLog(['Unauthorized — check your admin password.']);
+        setUnlocked(false);
+        sessionStorage.removeItem('admin_secret');
+        return;
+      }
+      setLog(data.log || [data.error || 'No response']);
+    } catch (err) {
+      setLog([`Request failed: ${err.message}`]);
+    } finally {
+      setRunning(null);
     }
   }
 
@@ -244,7 +307,7 @@ export default function AdminPanel() {
 
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-        border: `1px solid ${liveMode ? c.statusPublic : c.border}`, borderRadius: 10, padding: '14px 18px', marginBottom: 20,
+        border: `1px solid ${liveMode ? c.statusPublic : c.border}`, borderRadius: 10, padding: '14px 18px', marginBottom: 12,
         background: liveMode ? c.statusPublicBg : c.cardBg,
       }}>
         <div>
@@ -253,7 +316,7 @@ export default function AdminPanel() {
             Live Mode {liveMode === null ? '' : liveMode ? '— ON' : '— OFF'}
           </div>
           <div style={{ fontSize: 12, color: c.textDim, marginTop: 2 }}>
-            When on, one video per category posts automatically once a day, around 6:00 PM US Eastern (reduced from twice daily to stay within Render's free bandwidth limit).
+            When on, videos upload automatically once a day and are scheduled to actually go live at your configured target times below — using YouTube's own scheduling, so the exact upload moment doesn't matter.
           </div>
         </div>
         <button
@@ -269,13 +332,80 @@ export default function AdminPanel() {
       </div>
 
       {liveModeError && (
-        <div style={{ fontSize: 12.5, color: c.statusFailed, background: c.statusFailedBg, borderRadius: 8, padding: '10px 14px', marginTop: -12, marginBottom: 20 }}>
+        <div style={{ fontSize: 12.5, color: c.statusFailed, background: c.statusFailedBg, borderRadius: 8, padding: '10px 14px', marginBottom: 20 }}>
           ⚠ Couldn't check Live Mode status: {liveModeError}. This usually means GITHUB_TOKEN is missing or invalid on this server.
           <button onClick={loadLiveModeStatus} style={{ marginLeft: 10, fontSize: 11.5, textDecoration: 'underline', background: 'none', border: 'none', color: c.statusFailed, cursor: 'pointer', padding: 0 }}>
             Retry
           </button>
         </div>
       )}
+
+      <div style={{ marginBottom: 20 }}>
+        <button
+          onClick={() => setScheduleOpen(!scheduleOpen)}
+          style={{ fontSize: 12.5, fontWeight: 700, padding: '8px 14px', borderRadius: 8, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, cursor: 'pointer' }}
+        >
+          {scheduleOpen ? '▾' : '▸'} 🌐 Posting country & time
+        </button>
+
+        {scheduleOpen && (
+          <div style={{ marginTop: 10, border: `1px solid ${c.border}`, borderRadius: 10, padding: 16 }}>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: c.textDim, marginBottom: 4 }}>Target country / timezone (where you want videos to go live)</label>
+              <select
+                value={scheduleTimezone}
+                onChange={(e) => setScheduleTimezone(e.target.value)}
+                style={{ width: '100%', padding: '9px 10px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.bg, color: c.text, fontSize: 13 }}
+              >
+                {TIMEZONE_OPTIONS.map((tz) => (
+                  <option key={tz.value} value={tz.value}>{tz.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ display: 'block', fontSize: 11.5, fontWeight: 600, color: c.textDim, marginBottom: 6 }}>
+                Target publish times (24-hour, in the timezone above)
+              </label>
+              {scheduleTimes.map((t, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6, alignItems: 'center' }}>
+                  <input
+                    type="time"
+                    value={t}
+                    onChange={(e) => updateTimeSlot(i, e.target.value)}
+                    style={{ padding: '7px 10px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.bg, color: c.text, fontSize: 13 }}
+                  />
+                  {scheduleTimes.length > 1 && (
+                    <button onClick={() => removeTimeSlot(i)} style={{ fontSize: 12, color: c.statusFailed, background: 'none', border: 'none', cursor: 'pointer' }}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button onClick={addTimeSlot} style={{ fontSize: 12, color: c.statusScheduled, background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginTop: 4 }}>
+                + Add another time
+              </button>
+              <div style={{ fontSize: 11, color: c.textDim, marginTop: 8 }}>
+                Each video is uploaded once (whenever this runs) but scheduled to go live at exactly this time in the timezone above — powered by YouTube's own scheduled-publish feature. More times per day means more videos uploaded per run.
+              </div>
+            </div>
+
+            <button
+              onClick={saveSchedule}
+              disabled={scheduleSaving}
+              style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: c.accent, color: '#fff', fontWeight: 700, fontSize: 13, cursor: scheduleSaving ? 'default' : 'pointer' }}
+            >
+              {scheduleSaving ? 'Saving…' : 'Save schedule'}
+            </button>
+
+            {scheduleMessage && (
+              <div style={{ fontSize: 12.5, marginTop: 10, color: scheduleMessage.startsWith('✓') ? c.statusPublic : c.statusFailed }}>
+                {scheduleMessage}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 24 }}>
         <ActionButton label="Post today's video (private test)" running={running === 'post-private'} c={c} bg={c.statusScheduled}
@@ -314,7 +444,7 @@ export default function AdminPanel() {
               />
               <select
                 value={draftsCategory}
-                onChange={(e) => { setDraftsCategory(e.target.value); }}
+                onChange={(e) => setDraftsCategory(e.target.value)}
                 style={{ padding: '7px 10px', borderRadius: 6, border: `1px solid ${c.border}`, background: c.cardBg, color: c.text, fontSize: 12.5 }}
               >
                 <option value="">All categories</option>

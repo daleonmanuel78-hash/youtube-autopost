@@ -1,28 +1,23 @@
-name: Daily YouTube Post
+name: Daily YouTube Post (Scheduled)
 
 # Live Mode (the toggle in the Admin Panel) controls whether this actually
-# runs — it calls GitHub's API to enable/disable this workflow entirely.
-# Reduced back to once a day (from twice) to stay within Render's free
-# 5GB/month bandwidth limit — each real video transfer (download from
-# Dropbox + upload to YouTube) adds up fast at real video file sizes.
-#
-# NOTE on timing: GitHub Actions cron runs in UTC and does not auto-adjust
-# for US Daylight Saving Time. 22:00 UTC = 6:00 PM US Eastern during
-# Daylight Time (spring–fall, where we are now), but becomes 5:00 PM
-# Eastern during Standard Time (fall–spring). Flip to 23:00 UTC at the
-# twice-yearly clock change to keep it locked to exactly 6:00 PM year-round.
+# runs. Calls daily-post with mode:'schedule' — the app itself queues each
+# video with YouTube's own publishAt scheduling, so it goes live at exactly
+# your configured target-country time regardless of when this ping fires.
+# Running once daily with a comfortable lead time is enough; unlike the
+# old design, precise timing no longer matters here.
 on:
   schedule:
-    - cron: '0 22 * * *'
+    - cron: '0 10 * * *'
   workflow_dispatch: {}
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping the admin panel's post-video endpoint
+      - name: Queue scheduled posts
         run: |
           curl -f -X POST "https://youtube-autopost-ii0e.onrender.com/api/admin/daily-post" \
             -H "Content-Type: application/json" \
             -H "x-admin-secret: ${{ secrets.ADMIN_SECRET }}" \
-            -d '{"privacyStatus":"public"}'
+            -d '{"mode":"schedule"}'

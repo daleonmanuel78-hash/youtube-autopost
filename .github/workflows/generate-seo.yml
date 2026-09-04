@@ -1,10 +1,8 @@
 name: Daily SEO Generation
 
-# Runs 1 hour before the single daily posting slot (see daily-post.yml) so
-# freshly generated metadata is ready in time.
 on:
   schedule:
-    - cron: '0 21 * * *'
+    - cron: '0 8 * * *'
   workflow_dispatch: {}
 
 jobs:
