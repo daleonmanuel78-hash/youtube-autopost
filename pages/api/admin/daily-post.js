@@ -52,7 +52,7 @@ async function pickVideoForChannel(channel, categoryId) {
 // Uploads one video to YouTube for a channel, with the given status object
 // (immediate public/private, OR scheduled private+publishAt). Shared by both
 // the immediate manual-button flow and the new target-schedule flow.
-async function uploadVideoForChannel({ channel, categoryId, statusOverride, add }) {
+async function uploadVideoForChannel({ channel, categoryId, statusOverride, publishModeLabel, add }) {
   const video = await pickVideoForChannel(channel, categoryId);
   if (!video) {
     add('No pending videos left (or all remaining ones already attempted today). Skipping.');
@@ -63,7 +63,7 @@ async function uploadVideoForChannel({ channel, categoryId, statusOverride, add 
   const today = todayDateString();
   const { data: claim, error: claimErr } = await supabaseAdmin
     .from('post_queue')
-    .insert({ video_id: video.id, channel_id: channel.id, status: 'uploading', publish_mode: statusOverride.privacyStatus, scheduled_date: today })
+    .insert({ video_id: video.id, channel_id: channel.id, status: 'uploading', publish_mode: publishModeLabel || statusOverride.privacyStatus, scheduled_date: today })
     .select()
     .single();
   if (claimErr) throw new Error(`Claim failed (already claimed today?): ${claimErr.message}`);
@@ -155,6 +155,7 @@ export default async function handler(req, res) {
               channel,
               categoryId,
               statusOverride: { privacyStatus: 'private', publishAt: nextOccurrence.toISOString() },
+              publishModeLabel: 'scheduled',
               add,
             });
             if (youtubeVideoId) add(`✓ Scheduled: https://youtube.com/watch?v=${youtubeVideoId}`);

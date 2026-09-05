@@ -6,12 +6,7 @@ function todayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// Same job as the admin panel's global "Refresh analytics," scoped to just
-// this one channel's videos — lets the channel dashboard's own button do the
-// full job (including auto-trashing anything deleted directly on YouTube)
-// without needing the admin password.
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
   const { id: channelId } = req.query;
 
   try {
@@ -20,96 +15,71 @@ export default async function handler(req, res) {
 
     const { data: posted } = await supabaseAdmin
       .from('post_queue')
-      .select('video_id, youtube_video_id')
+      .select('id, video_id, youtube_video_id, publish_mode')
       .eq('channel_id', channelId)
       .eq('status', 'posted')
       .not('youtube_video_id', 'is', null);
 
-    // Manual uploads (from the "Upload a Video" popup) live in a separate
-    // table entirely — include them here too so this button actually
-    // refreshes every posted video for this channel, not just the imported ones.
-    const { data: manualPosted } = await supabaseAdmin
-      .from('channel_uploads')
-      .select('id, youtube_video_id')
-      .eq('channel_id', channelId)
-      .eq('status', 'posted')
-      .not('youtube_video_id', 'is', null);
-
-    const combined = [
-      ...(posted || []).map((p) => ({ videoId: p.video_id, youtubeVideoId: p.youtube_video_id, source: 'library' })),
-      ...(manualPosted || []).map((p) => ({ videoId: p.id, youtubeVideoId: p.youtube_video_id, source: 'manual' })),
-    ];
-
-    if (combined.length === 0) {
-      return res.status(200).json({ updated: 0, autoTrashed: 0 });
+    if (!posted || posted.length === 0) {
+      return res.status(200).json({ updated: 0, autoTrashed: 0, statusCorrected: 0 });
     }
 
     const oauth2Client = await refreshAccessToken(channel);
     const youtube = google.youtube({ version: 'v3', auth: oauth2Client });
-    const youtubeAnalytics = google.youtubeAnalytics({ version: 'v2', auth: oauth2Client });
     const today = todayDateString();
     let updated = 0;
     let autoTrashed = 0;
+    let statusCorrected = 0;
 
-    for (const { videoId, youtubeVideoId, source } of combined) {
+    for (const row of posted) {
       try {
-        const statsResp = await youtube.videos.list({ part: ['statistics'], id: [youtubeVideoId] });
+        // Fetch BOTH statistics and status — status is what lets us detect a
+        // scheduled video that has since actually gone live, so the
+        // dashboard stops showing it as "Scheduled" forever after the fact.
+        const statsResp = await youtube.videos.list({ part: ['statistics', 'status'], id: [row.youtube_video_id] });
 
         if (!statsResp.data.items || statsResp.data.items.length === 0) {
-          if (source === 'library') {
-            await supabaseAdmin
-              .from('videos')
-              .update({ trashed_at: new Date().toISOString(), trashed_from_status: 'posted', status: 'trashed' })
-              .eq('id', videoId);
-            await supabaseAdmin
-              .from('post_queue')
-              .update({ status: 'deleted', deleted_at: new Date().toISOString() })
-              .eq('video_id', videoId)
-              .eq('youtube_video_id', youtubeVideoId);
-          } else {
-            await supabaseAdmin.from('channel_uploads').update({ status: 'failed', error_message: 'No longer exists on YouTube' }).eq('id', videoId);
-          }
+          await supabaseAdmin
+            .from('videos')
+            .update({ trashed_at: new Date().toISOString(), trashed_from_status: 'posted', status: 'trashed' })
+            .eq('id', row.video_id);
+          await supabaseAdmin
+            .from('post_queue')
+            .update({ status: 'deleted', deleted_at: new Date().toISOString() })
+            .eq('id', row.id);
           autoTrashed++;
           continue;
         }
 
         const item = statsResp.data.items[0];
         const stats = item.statistics;
-        let extra = { watch_time_minutes: null, impressions: null, ctr: null };
-        try {
-          const anResp = await youtubeAnalytics.reports.query({
-            ids: `channel==${channel.youtube_channel_id}`,
-            startDate: '2020-01-01',
-            endDate: today,
-            metrics: 'estimatedMinutesWatched,impressions,impressionsClickThroughRate',
-            filters: `video==${youtubeVideoId}`,
-          });
-          const row = anResp.data.rows?.[0];
-          if (row) extra = { watch_time_minutes: row[0] ?? null, impressions: row[1] ?? null, ctr: row[2] ?? null };
-        } catch (e) {
-          /* non-fatal */
+        const actualPrivacyStatus = item.status?.privacyStatus; // 'public' | 'private' | 'unlisted'
+
+        // Self-heal: a video we scheduled (publish_mode='scheduled') that has
+        // now actually gone public on YouTube's side should stop showing as
+        // "Scheduled" — correct it to reflect what's really true right now.
+        if (row.publish_mode === 'scheduled' && actualPrivacyStatus === 'public') {
+          await supabaseAdmin.from('post_queue').update({ publish_mode: 'public' }).eq('id', row.id);
+          statusCorrected++;
         }
 
         await supabaseAdmin.from('video_analytics_snapshots').upsert(
           {
-            youtube_video_id: youtubeVideoId,
-            views: stats?.viewCount ? Number(stats.viewCount) : null,
-            likes: stats?.likeCount ? Number(stats.likeCount) : null,
-            comments: stats?.commentCount ? Number(stats.commentCount) : null,
-            watch_time_minutes: extra.watch_time_minutes,
-            impressions: extra.impressions,
-            ctr: extra.ctr,
+            youtube_video_id: row.youtube_video_id,
             snapshot_date: today,
+            views: parseInt(stats.viewCount) || 0,
+            likes: parseInt(stats.likeCount) || 0,
+            comments: parseInt(stats.commentCount) || 0,
           },
           { onConflict: 'youtube_video_id,snapshot_date' }
         );
         updated++;
       } catch (err) {
-        console.error(`Failed to refresh ${youtubeVideoId}:`, err.message);
+        console.error(`Failed to refresh ${row.youtube_video_id}:`, err.message);
       }
     }
 
-    res.status(200).json({ updated, autoTrashed });
+    res.status(200).json({ updated, autoTrashed, statusCorrected });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
